@@ -3,3 +3,6 @@ obj/
 /packages/
 riderModule.iml
 /_ReSharper.Caches/
+/data
+/.env
+/PolicyManager/appsettings.Development.json
