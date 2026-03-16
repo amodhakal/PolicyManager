@@ -4,4 +4,28 @@
     build:
       context: .
       dockerfile: PolicyManager/Dockerfile
+  policymanagerdb:
+    image: mcr.microsoft.com/mssql/server:2022-CU12-ubuntu-22.04
+    platform: linux/amd64
+    container_name: mssql_container
+    restart: unless-stopped
+    hostname: mssql-server
+    environment:
+      - ACCEPT_EULA=Y
+      - MSSQL_SA_PASSWORD=${DB_PASSWORD}
+      - MSSQL_PID=Developer
+      - MSSQL_BACKUP_DIR=/var/opt/mssql/backups
+      - MSSQL_LCID=1033
+      - TZ=Etc/UTC
+    ports:
+      - "14330:1433"
+    volumes:
+      - ./data/mssql/data:/var/opt/mssql/data
+      - ./data/mssql/log:/var/opt/mssql/log
+      - ./data/mssql/backups:/var/opt/mssql/backups
+    networks:
+      - mssql-net
 
+networks:
+  mssql-net:
+    driver: bridge
