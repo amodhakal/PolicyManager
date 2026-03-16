@@ -1,10 +1,11 @@
+using DotNetEnv;
 using Microsoft.EntityFrameworkCore;
 using PolicyManager.Data;
 using PolicyManager.Services;
 
-DotNetEnv.Env.Load("../.env");
-
 var builder = WebApplication.CreateBuilder(args);
+if (builder.Environment.IsDevelopment()) Env.Load("../.env");
+
 
 builder.Services.AddControllers();
 
