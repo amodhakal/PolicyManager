@@ -1,0 +1,7 @@
+﻿services:
+  policymanager:
+    image: policymanager
+    build:
+      context: .
+      dockerfile: PolicyManager/Dockerfile
+
