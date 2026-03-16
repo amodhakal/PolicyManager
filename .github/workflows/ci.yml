@@ -29,7 +29,8 @@ jobs:
         run: |
           dotnet test --no-build --configuration Release \
             --collect:"XPlat Code Coverage" \
-            --results-directory ./coverage
+            --results-directory ./coverage \
+            -- DataCollectionRunSettings.DataCollectors.DataCollector.Configuration.ExcludeByFile="**/Migrations/**/*.cs"
 
       - name: Upload coverage to Codecov
         uses: codecov/codecov-action@v4
@@ -37,4 +38,3 @@ jobs:
           files: ./coverage/**/coverage.cobertura.xml
           token: ${{ secrets.CODECOV_TOKEN }}
           fail_ci_if_error: false
-          
