@@ -18,6 +18,10 @@ public class AppDbContext(DbContextOptions<AppDbContext> options) : DbContext(op
         modelBuilder.Entity<Policy>()
             .HasIndex(p => p.PolicyNumber)
             .IsUnique();
+        
+        modelBuilder.Entity<PolicyHolder>()
+            .HasIndex(p => p.Email)
+            .IsUnique();
 
         modelBuilder.Entity<Policy>()
             .HasOne(p => p.PolicyHolder)
