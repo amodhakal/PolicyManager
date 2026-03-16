@@ -9,7 +9,7 @@ REST API for managing insurance policies, policyholders, and claims.
 
 ## What It Is
 
-PolicyManager is an ASP.NET Core 8 Web API that models core insurance operations: creating and managing policyholders, issuing and updating policies, filing claims, and adjudicating those claims (approve/deny)
+PolicyManager is an ASP.NET Core Web API that models core insurance operations: creating and managing policyholders, issuing and updating policies, filing claims, and adjudicating those claims (approve/deny)
 
 All data is persisted to SQL Server via Entity Framework Core with migration-based schema management.
 
@@ -32,7 +32,7 @@ All data is persisted to SQL Server via Entity Framework Core with migration-bas
 
 ## How to Run
 
-**Prerequisites:** Docker Desktop, .NET 8 SDK
+**Prerequisites:** Docker Desktop, .NET SDK, `.env` file in root, similar to `.env.example`
 
 ```bash
 # 1. Start SQL Server
