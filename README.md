@@ -17,15 +17,15 @@ All data is persisted to SQL Server via Entity Framework Core with migration-bas
 
 ## Stack
 
-| Technology | Role |
-|---|---|
-| ASP.NET Core 8 | Web API framework |
-| Entity Framework Core | ORM with code-first migrations |
-| SQL Server (Docker) | Primary data store |
-| OpenAPI / Swagger | API documentation and contract |
-| GitHub Actions | CI pipeline (build, test on every push to main) |
+| Technology              | Role |
+|-------------------------|---|
+| ASP.NET Core            | Web API framework |
+| Entity Framework Core   | ORM with code-first migrations |
+| SQL Server (Docker)     | Primary data store |
+| OpenAPI / Swagger       | API documentation and contract |
+| GitHub Actions          | CI pipeline (build, test on every push to main) |
 | Docker / Docker Compose | Containerized local environment |
-| xUnit | Unit testing (service layer) |
+| xUnit                   | Unit testing (service layer) |
 
 
 ---
