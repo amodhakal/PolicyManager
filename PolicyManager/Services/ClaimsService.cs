@@ -24,7 +24,6 @@ public class ClaimsService(AppDbContext context) : IClaimsService
     public async Task<ClaimDto?> GetById(int id)
     {
         return await context.Claims
-            .Include(c => c.Policy)
             .Where(c => c.Id == id)
             .Select(c => new ClaimDto
             {

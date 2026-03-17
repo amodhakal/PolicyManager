@@ -11,7 +11,7 @@ REST API for managing insurance policies, policyholders, and claims.
 
 PolicyManager is an ASP.NET Core Web API that models core insurance operations: creating and managing policyholders, issuing and updating policies, filing claims, and adjudicating those claims (approve/deny)
 
-All data is persisted to SQL Server via Entity Framework Core with migration-based schema management.
+All data is persisted to SQL Server via Entity Framework Core with migration-based schema management. Includes caching for performance.
 
 ---
 

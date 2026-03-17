@@ -97,6 +97,8 @@ namespace PolicyManager.Migrations
                     b.HasIndex("PolicyNumber")
                         .IsUnique();
 
+                    b.HasIndex("Status");
+
                     b.ToTable("Policies");
                 });
 

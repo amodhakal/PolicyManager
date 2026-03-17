@@ -6,9 +6,8 @@ using PolicyManager.Services;
 var builder = WebApplication.CreateBuilder(args);
 if (builder.Environment.IsDevelopment()) Env.Load("../.env");
 
-
+builder.Services.AddMemoryCache();
 builder.Services.AddControllers();
-
 builder.Services.AddEndpointsApiExplorer();
 builder.Services.AddSwaggerGen();
 
