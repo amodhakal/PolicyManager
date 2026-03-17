@@ -1,4 +1,5 @@
 using Microsoft.EntityFrameworkCore;
+using Microsoft.Extensions.Caching.Memory;
 using PolicyManager.Data;
 using PolicyManager.DTOs;
 using PolicyManager.Services;
@@ -7,6 +8,7 @@ namespace PolicyManager.Tests.Services;
 
 public class PolicyHoldersServiceTests : IDisposable
 {
+    private readonly IMemoryCache _cache;
     private readonly AppDbContext _context;
     private readonly PolicyHoldersService _policyHoldersService;
 
@@ -16,12 +18,14 @@ public class PolicyHoldersServiceTests : IDisposable
             .UseInMemoryDatabase(Guid.NewGuid().ToString())
             .Options;
         _context = new AppDbContext(opts);
-        _policyHoldersService = new PolicyHoldersService(_context);
+        _cache = new MemoryCache(new MemoryCacheOptions());
+        _policyHoldersService = new PolicyHoldersService(_context, _cache);
     }
 
     public void Dispose()
     {
         _context.Dispose();
+        _cache.Dispose();
     }
 
     private async Task<int> SeedHolder(string first = "Jane", string last = "Doe", string email = "jane@example.com")
