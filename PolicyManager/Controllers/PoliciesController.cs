@@ -1,5 +1,4 @@
 using Microsoft.AspNetCore.Mvc;
-using PolicyManager.Data;
 using PolicyManager.DTOs;
 using PolicyManager.Models.Enums;
 using PolicyManager.Services;
@@ -15,7 +14,7 @@ namespace PolicyManager.Controllers;
 /// </remarks>
 [ApiController]
 [Route("api/[controller]")]
-public class PoliciesController(AppDbContext context, IPoliciesService policiesService) : ControllerBase
+public class PoliciesController(IPoliciesService policiesService) : ControllerBase
 {
     /// <summary>
     ///     Retrieves all policies, optionally filtered by status.

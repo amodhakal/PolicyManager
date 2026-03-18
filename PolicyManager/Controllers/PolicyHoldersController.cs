@@ -1,5 +1,4 @@
 using Microsoft.AspNetCore.Mvc;
-using PolicyManager.Data;
 using PolicyManager.DTOs;
 using PolicyManager.Services;
 
@@ -14,7 +13,7 @@ namespace PolicyManager.Controllers;
 /// </remarks>
 [ApiController]
 [Route("api/[controller]")]
-public class PolicyHoldersController(AppDbContext context, IPolicyHoldersService policyHoldersService) : ControllerBase
+public class PolicyHoldersController(IPolicyHoldersService policyHoldersService) : ControllerBase
 {
     /// <summary>
     ///     Retrieves all policyholders.

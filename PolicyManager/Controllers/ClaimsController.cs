@@ -1,5 +1,4 @@
 using Microsoft.AspNetCore.Mvc;
-using PolicyManager.Data;
 using PolicyManager.DTOs;
 using PolicyManager.Services;
 
@@ -14,7 +13,7 @@ namespace PolicyManager.Controllers;
 /// </remarks>
 [ApiController]
 [Route("api/[controller]")]
-public class ClaimsController(AppDbContext context, IClaimsService claimsService, IPoliciesService policiesService)
+public class ClaimsController(IClaimsService claimsService, IPoliciesService policiesService)
     : ControllerBase
 {
     /// <summary>
