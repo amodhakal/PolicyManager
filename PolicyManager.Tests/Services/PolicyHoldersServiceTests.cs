@@ -6,6 +6,9 @@ using PolicyManager.Services;
 
 namespace PolicyManager.Tests.Services;
 
+/// <summary>
+///     Unit tests for the PolicyHoldersService class.
+/// </summary>
 public class PolicyHoldersServiceTests : IDisposable
 {
     private readonly IMemoryCache _cache;
@@ -28,6 +31,13 @@ public class PolicyHoldersServiceTests : IDisposable
         _cache.Dispose();
     }
 
+    /// <summary>
+    ///     Seeds a test policy holder into the database.
+    /// </summary>
+    /// <param name="first">The first name.</param>
+    /// <param name="last">The last name.</param>
+    /// <param name="email">The email address.</param>
+    /// <returns>The ID of the created policy holder.</returns>
     private async Task<int> SeedHolder(string first = "Jane", string last = "Doe", string email = "jane@example.com")
     {
         return await _policyHoldersService.Create(new CreatePolicyHolderDto
@@ -38,6 +48,9 @@ public class PolicyHoldersServiceTests : IDisposable
         });
     }
 
+    /// <summary>
+    ///     Verifies that creating a policy holder persists it and returns the ID.
+    /// </summary>
     [Fact]
     public async Task Create_PersistsHolder_ReturnsId()
     {
@@ -49,6 +62,9 @@ public class PolicyHoldersServiceTests : IDisposable
         Assert.Equal("js@test.com", holder.Email);
     }
 
+    /// <summary>
+    ///     Verifies that GetAll returns all policy holders.
+    /// </summary>
     [Fact]
     public async Task GetAll_ReturnsAllHolders()
     {
@@ -59,6 +75,9 @@ public class PolicyHoldersServiceTests : IDisposable
         Assert.Equal(2, result.Count());
     }
 
+    /// <summary>
+    ///     Verifies that GetById returns the correct DTO.
+    /// </summary>
     [Fact]
     public async Task GetById_ReturnsCorrectDto()
     {
@@ -71,6 +90,9 @@ public class PolicyHoldersServiceTests : IDisposable
         Assert.Equal("sue@ff.com", result.Email);
     }
 
+    /// <summary>
+    ///     Verifies that GetById returns null for non-existent ID.
+    /// </summary>
     [Fact]
     public async Task GetById_NotFound_ReturnsNull()
     {

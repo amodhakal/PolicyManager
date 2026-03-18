@@ -7,6 +7,9 @@ using PolicyManager.Services;
 
 namespace PolicyManager.Tests.Services;
 
+/// <summary>
+///     Unit tests for the PoliciesService class.
+/// </summary>
 public class PoliciesServiceTests : IDisposable
 {
     private readonly AppDbContext _context;
@@ -26,6 +29,10 @@ public class PoliciesServiceTests : IDisposable
         _context.Dispose();
     }
 
+    /// <summary>
+    ///     Seeds a test policyholder into the database.
+    /// </summary>
+    /// <returns>The created PolicyHolder entity.</returns>
     private async Task<PolicyHolder> SeedHolder()
     {
         var holder = new PolicyHolder { FirstName = "Jane", LastName = "Doe", Email = "jane@example.com" };
@@ -34,11 +41,20 @@ public class PoliciesServiceTests : IDisposable
         return holder;
     }
 
+    /// <summary>
+    ///     Seeds a test policy into the database.
+    /// </summary>
+    /// <param name="holderId">The policyholder ID.</param>
+    /// <param name="status">The initial policy status.</param>
+    /// <returns>The ID of the created policy.</returns>
     private async Task<int> SeedPolicy(int holderId, PolicyStatus status = PolicyStatus.Active)
     {
         return await _policiesService.Create(new CreatePolicyDto { PolicyHolderId = holderId, Premium = 500m });
     }
 
+    /// <summary>
+    ///     Verifies that creating a policy returns a new ID and persists it.
+    /// </summary>
     [Fact]
     public async Task Create_ReturnsNewId_AndPersists()
     {
@@ -52,6 +68,9 @@ public class PoliciesServiceTests : IDisposable
         Assert.Equal(PolicyStatus.Active, saved.Status);
     }
 
+    /// <summary>
+    ///     Verifies that cancelling a policy sets its status to Canceled but row still exists.
+    /// </summary>
     [Fact]
     public async Task Cancel_SetsCancelledStatus_RowStillExists()
     {
@@ -64,6 +83,9 @@ public class PoliciesServiceTests : IDisposable
         Assert.Equal(PolicyStatus.Cancelled, policy.Status);
     }
 
+    /// <summary>
+    ///     Verifies that cancelling a non-existent policy does not throw.
+    /// </summary>
     [Fact]
     public async Task Cancel_NonExistentId_DoesNotThrow()
     {
@@ -71,6 +93,9 @@ public class PoliciesServiceTests : IDisposable
         Assert.Null(ex);
     }
 
+    /// <summary>
+    ///     Verifies that GetAll with status filter returns only matching policies.
+    /// </summary>
     [Fact]
     public async Task GetAll_FilterByStatus_ReturnsOnlyMatching()
     {
@@ -86,6 +111,9 @@ public class PoliciesServiceTests : IDisposable
         Assert.Equal(activeId, active[0].Id);
     }
 
+    /// <summary>
+    ///     Verifies that GetAll without filter returns all policies.
+    /// </summary>
     [Fact]
     public async Task GetAll_NoFilter_ReturnsAll()
     {
@@ -97,6 +125,9 @@ public class PoliciesServiceTests : IDisposable
         Assert.Equal(2, all.Count());
     }
 
+    /// <summary>
+    ///     Verifies that updating a policy changes both premium and status.
+    /// </summary>
     [Fact]
     public async Task Update_ChangesPremiumAndStatus()
     {
@@ -110,6 +141,9 @@ public class PoliciesServiceTests : IDisposable
         Assert.Equal(PolicyStatus.Expired, policy.Status);
     }
 
+    /// <summary>
+    ///     Verifies that GetById returns correct DTO including holder name.
+    /// </summary>
     [Fact]
     public async Task GetById_ReturnsCorrectDto_WithHolderName()
     {
@@ -121,6 +155,9 @@ public class PoliciesServiceTests : IDisposable
         Assert.Equal("Jane Doe", dto!.PolicyholderName);
     }
 
+    /// <summary>
+    ///     Verifies that GetById returns null for non-existent ID.
+    /// </summary>
     [Fact]
     public async Task GetById_NotFound_ReturnsNull()
     {

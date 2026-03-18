@@ -3,14 +3,34 @@ using PolicyManager.Models;
 
 namespace PolicyManager.Data;
 
+/// <summary>
+///     Entity Framework DbContext for the Policy Manager application.
+/// </summary>
+/// <remarks>
+///     Manages database connections and entity mappings for PolicyHolder, Policy, and Claim entities.
+///     Configures relationships, indexes, and cascade delete behaviors.
+/// </remarks>
 public class AppDbContext(DbContextOptions<AppDbContext> options) : DbContext(options)
 {
+    /// <summary>
+    ///     Gets or sets the collection of policyholders.
+    /// </summary>
     public DbSet<PolicyHolder> PolicyHolders { get; set; }
 
+    /// <summary>
+    ///     Gets or sets the collection of policies.
+    /// </summary>
     public DbSet<Policy> Policies { get; set; }
 
+    /// <summary>
+    ///     Gets or sets the collection of claims.
+    /// </summary>
     public DbSet<Claim> Claims { get; set; }
 
+    /// <summary>
+    ///     Configures the entity model and relationships.
+    /// </summary>
+    /// <param name="modelBuilder">The model builder to configure entities.</param>
     protected override void OnModelCreating(ModelBuilder modelBuilder)
     {
         base.OnModelCreating(modelBuilder);

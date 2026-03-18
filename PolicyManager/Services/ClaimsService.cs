@@ -6,8 +6,15 @@ using PolicyManager.Models.Enums;
 
 namespace PolicyManager.Services;
 
+/// <summary>
+///     Service implementation for managing insurance claims.
+/// </summary>
 public class ClaimsService(AppDbContext context) : IClaimsService
 {
+    /// <summary>
+    ///     Retrieves all claims from the database.
+    /// </summary>
+    /// <returns>A list of all claims as ClaimDto objects.</returns>
     public async Task<IEnumerable<ClaimDto>> GetAll()
     {
         return await context.Claims
@@ -21,6 +28,11 @@ public class ClaimsService(AppDbContext context) : IClaimsService
             }).ToListAsync();
     }
 
+    /// <summary>
+    ///     Retrieves a claim by its unique identifier.
+    /// </summary>
+    /// <param name="id">The claim identifier.</param>
+    /// <returns>The claim if found; otherwise, null.</returns>
     public async Task<ClaimDto?> GetById(int id)
     {
         return await context.Claims
@@ -36,6 +48,11 @@ public class ClaimsService(AppDbContext context) : IClaimsService
             .FirstOrDefaultAsync();
     }
 
+    /// <summary>
+    ///     Creates a new claim.
+    /// </summary>
+    /// <param name="dto">The claim data transfer object.</param>
+    /// <returns>The unique identifier of the newly created claim.</returns>
     public async Task<int> Create(ClaimDto dto)
     {
         var claim = new Claim
@@ -51,6 +68,11 @@ public class ClaimsService(AppDbContext context) : IClaimsService
         return claim.Id;
     }
 
+    /// <summary>
+    ///     Updates the status of an existing claim.
+    /// </summary>
+    /// <param name="id">The claim identifier.</param>
+    /// <param name="dto">The claim data containing the new status.</param>
     public async Task UpdateStatus(int id, ClaimDto dto)
     {
         var claim = await context.Claims.FindAsync(id);

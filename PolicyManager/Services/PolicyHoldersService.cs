@@ -6,8 +6,15 @@ using PolicyManager.Models;
 
 namespace PolicyManager.Services;
 
+/// <summary>
+///     Service implementation for managing policyholders with caching support.
+/// </summary>
 public class PolicyHoldersService(AppDbContext context, IMemoryCache cache) : IPolicyHoldersService
 {
+    /// <summary>
+    ///     Retrieves all policyholders from the database.
+    /// </summary>
+    /// <returns>A list of all policyholders.</returns>
     public async Task<IEnumerable<PolicyHolderDto>> GetAll()
     {
         if (cache.TryGetValue("policyholders:all", out IEnumerable<PolicyHolderDto>? cached)) return cached!;
@@ -24,6 +31,11 @@ public class PolicyHoldersService(AppDbContext context, IMemoryCache cache) : IP
         return holders;
     }
 
+    /// <summary>
+    ///     Retrieves a policyholder by their unique identifier.
+    /// </summary>
+    /// <param name="id">The policyholder identifier.</param>
+    /// <returns>The policyholder if found; otherwise, null.</returns>
     public async Task<PolicyHolderDto?> GetById(int id)
     {
         var key = $"policyholders:{id}";
@@ -39,6 +51,11 @@ public class PolicyHoldersService(AppDbContext context, IMemoryCache cache) : IP
         return holder;
     }
 
+    /// <summary>
+    ///     Creates a new policyholder.
+    /// </summary>
+    /// <param name="dto">The policyholder data transfer object.</param>
+    /// <returns>The unique identifier of the newly created policyholder.</returns>
     public async Task<int> Create(CreatePolicyHolderDto dto)
     {
         var holder = new PolicyHolder

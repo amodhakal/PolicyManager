@@ -1,3 +1,4 @@
+using System.Reflection;
 using DotNetEnv;
 using Microsoft.EntityFrameworkCore;
 using PolicyManager.Data;
@@ -9,7 +10,12 @@ if (builder.Environment.IsDevelopment()) Env.Load("../.env");
 builder.Services.AddMemoryCache();
 builder.Services.AddControllers();
 builder.Services.AddEndpointsApiExplorer();
-builder.Services.AddSwaggerGen();
+builder.Services.AddSwaggerGen(options =>
+{
+    var xmlFile = $"{Assembly.GetExecutingAssembly().GetName().Name}.xml";
+    var xmlPath = Path.Combine(AppContext.BaseDirectory, xmlFile);
+    options.IncludeXmlComments(xmlPath);
+});
 
 var connectionString = $"Server={Environment.GetEnvironmentVariable("DB_HOST")};" +
                        $"Database={Environment.GetEnvironmentVariable("DB_NAME")};" +

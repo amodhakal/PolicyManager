@@ -6,8 +6,16 @@ using PolicyManager.Models.Enums;
 
 namespace PolicyManager.Services;
 
+/// <summary>
+///     Service implementation for managing insurance policies.
+/// </summary>
 public class PoliciesService(AppDbContext context) : IPoliciesService
 {
+    /// <summary>
+    ///     Retrieves all policies, optionally filtered by status.
+    /// </summary>
+    /// <param name="status">Optional status filter.</param>
+    /// <returns>A list of policies matching the filter criteria.</returns>
     public async Task<IEnumerable<PolicyDto>> GetAll(PolicyStatus? status)
     {
         var query = context.Policies.Include(p => p.PolicyHolder).AsQueryable();
@@ -23,6 +31,11 @@ public class PoliciesService(AppDbContext context) : IPoliciesService
         }).ToListAsync();
     }
 
+    /// <summary>
+    ///     Retrieves a policy by its unique identifier.
+    /// </summary>
+    /// <param name="id">The policy identifier.</param>
+    /// <returns>The policy if found; otherwise, null.</returns>
     public async Task<PolicyDto?> GetById(int id)
     {
         return await context.Policies
@@ -39,6 +52,11 @@ public class PoliciesService(AppDbContext context) : IPoliciesService
             .FirstOrDefaultAsync();
     }
 
+    /// <summary>
+    ///     Creates a new policy.
+    /// </summary>
+    /// <param name="dto">The policy data transfer object.</param>
+    /// <returns>The unique identifier of the newly created policy.</returns>
     public async Task<int> Create(CreatePolicyDto dto)
     {
         var policy = new Policy
@@ -53,6 +71,11 @@ public class PoliciesService(AppDbContext context) : IPoliciesService
         return policy.Id;
     }
 
+    /// <summary>
+    ///     Updates an existing policy.
+    /// </summary>
+    /// <param name="id">The policy identifier.</param>
+    /// <param name="dto">The policy data transfer object containing updated details.</param>
     public async Task Update(int id, UpdatePolicyDto dto)
     {
         var policy = await context.Policies.FindAsync(id);
@@ -63,6 +86,10 @@ public class PoliciesService(AppDbContext context) : IPoliciesService
         await context.SaveChangesAsync();
     }
 
+    /// <summary>
+    ///     Cancels an existing policy by setting its status to Cancel.
+    /// </summary>
+    /// <param name="id">The policy identifier.</param>
     public async Task Cancel(int id)
     {
         var policy = await context.Policies.FindAsync(id);
