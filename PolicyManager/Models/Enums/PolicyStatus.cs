@@ -1,8 +1,11 @@
+using System.Text.Json.Serialization;
+
 namespace PolicyManager.Models.Enums;
 
 /// <summary>
 ///     Represents the status of an insurance policy.
 /// </summary>
+[JsonConverter(typeof(JsonStringEnumConverter))]
 public enum PolicyStatus
 {
     /// <summary>

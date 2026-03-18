@@ -1,8 +1,11 @@
+using System.Text.Json.Serialization;
+
 namespace PolicyManager.Models.Enums;
 
 /// <summary>
 ///     Represents the type of insurance policy.
 /// </summary>
+[JsonConverter(typeof(JsonStringEnumConverter))]
 public enum PolicyType
 {
     /// <summary>
