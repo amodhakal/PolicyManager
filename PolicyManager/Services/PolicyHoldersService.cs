@@ -27,7 +27,6 @@ public class PolicyHoldersService(AppDbContext context, IMemoryCache cache) : IP
             Email = p.Email
         }).ToListAsync();
 
-        cache.Set("policyholders:all", holders, TimeSpan.FromMinutes(5));
         return holders;
     }
 
@@ -65,6 +64,7 @@ public class PolicyHoldersService(AppDbContext context, IMemoryCache cache) : IP
         await context.SaveChangesAsync();
 
         cache.Remove("policyholders:all");
+        cache.Remove($"policyholders:{holder.Id}");
         return holder.Id;
     }
 }

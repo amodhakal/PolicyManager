@@ -32,12 +32,12 @@ public class PolicyHoldersServiceTests : IDisposable
     }
 
     /// <summary>
-    ///     Seeds a test policy holder into the database.
+    ///     Seeds a test policyholder into the database.
     /// </summary>
     /// <param name="first">The first name.</param>
     /// <param name="last">The last name.</param>
     /// <param name="email">The email address.</param>
-    /// <returns>The ID of the created policy holder.</returns>
+    /// <returns>The ID of the created policyholder.</returns>
     private async Task<int> SeedHolder(string first = "Jane", string last = "Doe", string email = "jane@example.com")
     {
         return await _policyHoldersService.Create(new CreatePolicyHolderDto
@@ -49,7 +49,7 @@ public class PolicyHoldersServiceTests : IDisposable
     }
 
     /// <summary>
-    ///     Verifies that creating a policy holder persists it and returns the ID.
+    ///     Verifies that creating a policyholder persists it and returns the ID.
     /// </summary>
     [Fact]
     public async Task Create_PersistsHolder_ReturnsId()
