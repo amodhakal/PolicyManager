@@ -36,17 +36,20 @@ public class Policy
     /// <summary>
     ///     The premium amount for the policy.
     /// </summary>
+    [Required]
     [Column(TypeName = "decimal(10,2)")]
     public decimal Premium { get; set; }
 
     /// <summary>
     ///     The start date of the policy coverage.
     /// </summary>
+    [Required]
     public DateTime StartDate { get; set; }
 
     /// <summary>
     ///     The end date of the policy coverage.
     /// </summary>
+    [Required]
     public DateTime EndDate { get; set; }
 
     /// <summary>

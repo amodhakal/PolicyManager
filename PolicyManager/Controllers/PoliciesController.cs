@@ -49,7 +49,7 @@ public class PoliciesController(IPoliciesService policiesService) : ControllerBa
     /// <param name="dto">The policy data transfer object containing policy details.</param>
     /// <returns>A created result with the new policy's identifier.</returns>
     /// <response code="201">Policy created successfully.</response>
-    /// <response code="400">Invalid input or policy holder not found.</response>
+    /// <response code="400">Invalid input or policyholder not found.</response>
     [HttpPost]
     public async Task<ActionResult> Create(CreatePolicyDto dto)
     {
@@ -63,13 +63,13 @@ public class PoliciesController(IPoliciesService policiesService) : ControllerBa
     /// <param name="id">The policy identifier.</param>
     /// <param name="dto">The policy data transfer object containing updated details.</param>
     /// <returns>No content if successful.</returns>
-    /// <response code="204">Policy updated successfully.</response>
+    /// <response code="200">Policy updated successfully.</response>
     /// <response code="404">Policy not found.</response>
     [HttpPut("{id:int}")]
     public async Task<ActionResult> Update(int id, UpdatePolicyDto dto)
     {
         await policiesService.Update(id, dto);
-        return NoContent();
+        return Ok();
     }
 
     /// <summary>
@@ -77,12 +77,12 @@ public class PoliciesController(IPoliciesService policiesService) : ControllerBa
     /// </summary>
     /// <param name="id">The policy identifier.</param>
     /// <returns>No content if successful.</returns>
-    /// <response code="204">Policy canceled successfully.</response>
+    /// <response code="200">Policy canceled successfully.</response>
     /// <response code="404">Policy not found.</response>
     [HttpDelete("{id:int}")]
     public async Task<ActionResult> Cancel(int id)
     {
         await policiesService.Cancel(id);
-        return NoContent();
+        return Ok();
     }
 }
