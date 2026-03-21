@@ -53,7 +53,7 @@ public class ClaimsController(IClaimsService claimsService, IPoliciesService pol
     public async Task<ActionResult> Create(ClaimDto dto)
     {
         var existingPolicy = await policiesService.GetById(dto.PolicyId);
-        if (existingPolicy != null) return BadRequest("Policy does not exist.");
+        if (existingPolicy == null) return BadRequest("Policy does not exist.");
 
         var claimId = await claimsService.Create(dto);
         return CreatedAtAction(nameof(GetById), new { id = claimId }, claimId);
@@ -65,12 +65,12 @@ public class ClaimsController(IClaimsService claimsService, IPoliciesService pol
     /// <param name="id">The claim identifier.</param>
     /// <param name="dto">The claim data containing the new status.</param>
     /// <returns>No content if successful.</returns>
-    /// <response code="204">Status updated successfully.</response>
+    /// <response code="200">Status updated successfully.</response>
     /// <response code="404">Claim not found.</response>
     [HttpPatch("{id:int}/status")]
     public async Task<ActionResult> UpdateStatus(int id, ClaimDto dto)
     {
         await claimsService.UpdateStatus(id, dto);
-        return NoContent();
+        return Ok();
     }
 }
