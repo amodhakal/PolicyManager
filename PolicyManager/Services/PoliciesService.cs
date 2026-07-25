@@ -1,3 +1,4 @@
+using System.Text.Json;
 using Microsoft.EntityFrameworkCore;
 using PolicyManager.Data;
 using PolicyManager.DTOs;
@@ -7,7 +8,7 @@ using PolicyManager.Models.Enums;
 namespace PolicyManager.Services;
 
 /// <summary>
-///     Service implementation for managing insurance policies.
+///     Service implementation for managing insurance policies with transactional outbox support.
 /// </summary>
 public class PoliciesService(AppDbContext context) : IPoliciesService
 {
@@ -53,7 +54,7 @@ public class PoliciesService(AppDbContext context) : IPoliciesService
     }
 
     /// <summary>
-    ///     Creates a new policy.
+    ///     Creates a new policy and records an outbox message transactionally.
     /// </summary>
     /// <param name="dto">The policy data transfer object.</param>
     /// <returns>The unique identifier of the newly created policy.</returns>
@@ -67,6 +68,14 @@ public class PoliciesService(AppDbContext context) : IPoliciesService
         };
 
         context.Policies.Add(policy);
+
+        var outboxMessage = new OutboxMessage
+        {
+            Type = "PolicyCreated",
+            Content = JsonSerializer.Serialize(new { policy.Id, policy.PolicyNumber, policy.Premium, policy.PolicyHolderId, policy.Status })
+        };
+        context.OutboxMessages.Add(outboxMessage);
+
         await context.SaveChangesAsync();
         return policy.Id;
     }
@@ -83,11 +92,19 @@ public class PoliciesService(AppDbContext context) : IPoliciesService
 
         policy.Status = dto.Status;
         policy.Premium = dto.Premium;
+
+        var outboxMessage = new OutboxMessage
+        {
+            Type = "PolicyUpdated",
+            Content = JsonSerializer.Serialize(new { policy.Id, policy.PolicyNumber, policy.Premium, policy.Status })
+        };
+        context.OutboxMessages.Add(outboxMessage);
+
         await context.SaveChangesAsync();
     }
 
     /// <summary>
-    ///     Cancels an existing policy by setting its status to Cancel.
+    ///     Cancels an existing policy by setting its status to Cancelled and recording an outbox message.
     /// </summary>
     /// <param name="id">The policy identifier.</param>
     public async Task Cancel(int id)
@@ -96,6 +113,14 @@ public class PoliciesService(AppDbContext context) : IPoliciesService
         if (policy == null) return;
 
         policy.Status = PolicyStatus.Cancelled;
+
+        var outboxMessage = new OutboxMessage
+        {
+            Type = "PolicyCancelled",
+            Content = JsonSerializer.Serialize(new { policy.Id, policy.PolicyNumber, policy.Status })
+        };
+        context.OutboxMessages.Add(outboxMessage);
+
         await context.SaveChangesAsync();
     }
 }

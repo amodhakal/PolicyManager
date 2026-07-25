@@ -1,3 +1,4 @@
+using System.Text.Json;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Caching.Memory;
 using PolicyManager.Data;
@@ -7,7 +8,7 @@ using PolicyManager.Models;
 namespace PolicyManager.Services;
 
 /// <summary>
-///     Service implementation for managing policyholders with caching support.
+///     Service implementation for managing policyholders with caching and transactional outbox support.
 /// </summary>
 public class PolicyHoldersService(AppDbContext context, IMemoryCache cache) : IPolicyHoldersService
 {
@@ -51,7 +52,7 @@ public class PolicyHoldersService(AppDbContext context, IMemoryCache cache) : IP
     }
 
     /// <summary>
-    ///     Creates a new policyholder.
+    ///     Creates a new policyholder and records an outbox message transactionally.
     /// </summary>
     /// <param name="dto">The policyholder data transfer object.</param>
     /// <returns>The unique identifier of the newly created policyholder.</returns>
@@ -61,6 +62,14 @@ public class PolicyHoldersService(AppDbContext context, IMemoryCache cache) : IP
             { FirstName = dto.FirstName, LastName = dto.LastName, Email = dto.Email };
 
         context.PolicyHolders.Add(holder);
+
+        var outboxMessage = new OutboxMessage
+        {
+            Type = "PolicyHolderCreated",
+            Content = JsonSerializer.Serialize(new { holder.Id, holder.FirstName, holder.LastName, holder.Email })
+        };
+        context.OutboxMessages.Add(outboxMessage);
+
         await context.SaveChangesAsync();
 
         cache.Remove("policyholders:all");

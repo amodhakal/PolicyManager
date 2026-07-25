@@ -1,3 +1,4 @@
+using System.Text.Json;
 using Microsoft.EntityFrameworkCore;
 using PolicyManager.Data;
 using PolicyManager.DTOs;
@@ -7,7 +8,7 @@ using PolicyManager.Models.Enums;
 namespace PolicyManager.Services;
 
 /// <summary>
-///     Service implementation for managing insurance claims.
+///     Service implementation for managing insurance claims with transactional outbox support.
 /// </summary>
 public class ClaimsService(AppDbContext context) : IClaimsService
 {
@@ -49,7 +50,7 @@ public class ClaimsService(AppDbContext context) : IClaimsService
     }
 
     /// <summary>
-    ///     Creates a new claim.
+    ///     Creates a new claim and records an outbox message transactionally.
     /// </summary>
     /// <param name="dto">The claim data transfer object.</param>
     /// <returns>The unique identifier of the newly created claim.</returns>
@@ -64,12 +65,20 @@ public class ClaimsService(AppDbContext context) : IClaimsService
         };
 
         context.Claims.Add(claim);
+
+        var outboxMessage = new OutboxMessage
+        {
+            Type = "ClaimCreated",
+            Content = JsonSerializer.Serialize(new { claim.Id, claim.PolicyId, claim.Amount, claim.Status, claim.FiledAt })
+        };
+        context.OutboxMessages.Add(outboxMessage);
+
         await context.SaveChangesAsync();
         return claim.Id;
     }
 
     /// <summary>
-    ///     Updates the status of an existing claim.
+    ///     Updates the status of an existing claim and records an outbox message.
     /// </summary>
     /// <param name="id">The claim identifier.</param>
     /// <param name="dto">The claim data containing the new status.</param>
@@ -79,6 +88,14 @@ public class ClaimsService(AppDbContext context) : IClaimsService
         if (claim == null) return;
 
         claim.Status = dto.Status;
+
+        var outboxMessage = new OutboxMessage
+        {
+            Type = "ClaimStatusUpdated",
+            Content = JsonSerializer.Serialize(new { claim.Id, claim.PolicyId, claim.Status })
+        };
+        context.OutboxMessages.Add(outboxMessage);
+
         await context.SaveChangesAsync();
     }
 }
