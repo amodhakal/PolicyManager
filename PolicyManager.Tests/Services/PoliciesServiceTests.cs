@@ -164,4 +164,21 @@ public class PoliciesServiceTests : IDisposable
         var result = await _policiesService.GetById(99999);
         Assert.Null(result);
     }
+
+    /// <summary>
+    ///     Verifies that creating a policy transactional writes an outbox message.
+    /// </summary>
+    [Fact]
+    public async Task Create_WritesOutboxMessage()
+    {
+        var holder = await SeedHolder();
+        var dto = new CreatePolicyDto { PolicyHolderId = holder.Id, Premium = 1000m };
+
+        await _policiesService.Create(dto);
+
+        var outboxMessage = await _context.OutboxMessages.FirstOrDefaultAsync(m => m.Type == "PolicyCreated");
+        Assert.NotNull(outboxMessage);
+        Assert.Null(outboxMessage.ProcessedAt);
+        Assert.Contains("1000", outboxMessage.Content);
+    }
 }
