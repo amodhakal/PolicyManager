@@ -25,6 +25,14 @@ public interface IPoliciesService
     public Task<PolicyDto?> GetById(int id, CancellationToken cancellationToken = default);
 
     /// <summary>
+    ///     Determines whether a policy with the given identifier exists.
+    /// </summary>
+    /// <param name="id">The policy identifier.</param>
+    /// <param name="cancellationToken">Token used to cancel the operation.</param>
+    /// <returns>True if a policy with the identifier exists; otherwise, false.</returns>
+    public Task<bool> ExistsAsync(int id, CancellationToken cancellationToken = default);
+
+    /// <summary>
     ///     Creates a new policy.
     /// </summary>
     /// <param name="dto">The policy data transfer object.</param>
