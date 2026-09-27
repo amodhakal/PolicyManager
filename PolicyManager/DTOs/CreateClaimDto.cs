@@ -18,5 +18,5 @@ public class CreateClaimDto
     /// <summary>
     ///     The description of the claim.
     /// </summary>
-    public string Description { get; set; }
+    public string Description { get; set; } = string.Empty;
 }

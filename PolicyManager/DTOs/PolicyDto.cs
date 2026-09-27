@@ -15,7 +15,7 @@ public class PolicyDto
     /// <summary>
     ///     The unique policy number assigned to this policy.
     /// </summary>
-    public string PolicyNumber { get; set; }
+    public string PolicyNumber { get; set; } = string.Empty;
 
     /// <summary>
     ///     The premium amount for the policy.
@@ -30,7 +30,7 @@ public class PolicyDto
     /// <summary>
     ///     The full name of the policyholder.
     /// </summary>
-    public string PolicyholderName { get; set; }
+    public string PolicyholderName { get; set; } = string.Empty;
 
     /// <summary>
     ///     The unique identifier of the policyholder.
