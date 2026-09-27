@@ -1,44 +1,21 @@
 using Microsoft.EntityFrameworkCore;
-using PolicyManager.Data;
 using PolicyManager.DTOs;
-using PolicyManager.Models;
 using PolicyManager.Models.Enums;
 using PolicyManager.Services;
+using PolicyManager.Tests.Infrastructure;
 
 namespace PolicyManager.Tests.Services;
 
 /// <summary>
 ///     Unit tests for the PoliciesService class.
 /// </summary>
-public class PoliciesServiceTests : IDisposable
+public class PoliciesServiceTests : ServiceTestBase
 {
-    private readonly AppDbContext _context;
     private readonly PoliciesService _policiesService;
 
     public PoliciesServiceTests()
     {
-        var opts = new DbContextOptionsBuilder<AppDbContext>()
-            .UseInMemoryDatabase(Guid.NewGuid().ToString())
-            .Options;
-        _context = new AppDbContext(opts);
-        _policiesService = new PoliciesService(_context);
-    }
-
-    public void Dispose()
-    {
-        _context.Dispose();
-    }
-
-    /// <summary>
-    ///     Seeds a test policyholder into the database.
-    /// </summary>
-    /// <returns>The created PolicyHolder entity.</returns>
-    private async Task<PolicyHolder> SeedHolder()
-    {
-        var holder = new PolicyHolder { FirstName = "Jane", LastName = "Doe", Email = "jane@example.com" };
-        _context.PolicyHolders.Add(holder);
-        await _context.SaveChangesAsync();
-        return holder;
+        _policiesService = new PoliciesService(Context);
     }
 
     /// <summary>
@@ -58,11 +35,11 @@ public class PoliciesServiceTests : IDisposable
     [Fact]
     public async Task Create_ReturnsNewId_AndPersists()
     {
-        var holder = await SeedHolder();
+        var holder = await SeedHolderEntityAsync();
         var dto = new CreatePolicyDto { PolicyHolderId = holder.Id, Premium = 750m };
 
         var id = await _policiesService.Create(dto);
-        var saved = await _context.Policies.FindAsync(id);
+        var saved = await Context.Policies.FindAsync(id);
         Assert.NotNull(saved);
         Assert.Equal(750m, saved.Premium);
         Assert.Equal(PolicyStatus.Active, saved.Status);
@@ -74,11 +51,11 @@ public class PoliciesServiceTests : IDisposable
     [Fact]
     public async Task Cancel_SetsCancelledStatus_RowStillExists()
     {
-        var holder = await SeedHolder();
+        var holder = await SeedHolderEntityAsync();
         var id = await SeedPolicy(holder.Id);
         await _policiesService.Cancel(id);
 
-        var policy = await _context.Policies.FindAsync(id);
+        var policy = await Context.Policies.FindAsync(id);
         Assert.NotNull(policy);
         Assert.Equal(PolicyStatus.Cancelled, policy.Status);
     }
@@ -99,7 +76,7 @@ public class PoliciesServiceTests : IDisposable
     [Fact]
     public async Task GetAll_FilterByStatus_ReturnsOnlyMatching()
     {
-        var holder = await SeedHolder();
+        var holder = await SeedHolderEntityAsync();
         var activeId = await SeedPolicy(holder.Id);
         var cancelledId = await SeedPolicy(holder.Id);
         await _policiesService.Cancel(cancelledId);
@@ -117,7 +94,7 @@ public class PoliciesServiceTests : IDisposable
     [Fact]
     public async Task GetAll_NoFilter_ReturnsAll()
     {
-        var holder = await SeedHolder();
+        var holder = await SeedHolderEntityAsync();
         await SeedPolicy(holder.Id);
         await SeedPolicy(holder.Id);
 
@@ -131,12 +108,12 @@ public class PoliciesServiceTests : IDisposable
     [Fact]
     public async Task Update_ChangesPremiumAndStatus()
     {
-        var holder = await SeedHolder();
+        var holder = await SeedHolderEntityAsync();
         var id = await SeedPolicy(holder.Id);
 
         await _policiesService.Update(id, new UpdatePolicyDto { Premium = 999m, Status = PolicyStatus.Expired });
 
-        var policy = await _context.Policies.FindAsync(id);
+        var policy = await Context.Policies.FindAsync(id);
         Assert.Equal(999m, policy!.Premium);
         Assert.Equal(PolicyStatus.Expired, policy.Status);
     }
@@ -147,7 +124,7 @@ public class PoliciesServiceTests : IDisposable
     [Fact]
     public async Task GetById_ReturnsCorrectDto_WithHolderName()
     {
-        var holder = await SeedHolder();
+        var holder = await SeedHolderEntityAsync();
         var id = await SeedPolicy(holder.Id);
         var dto = await _policiesService.GetById(id);
 
@@ -171,12 +148,12 @@ public class PoliciesServiceTests : IDisposable
     [Fact]
     public async Task Create_WritesOutboxMessage()
     {
-        var holder = await SeedHolder();
+        var holder = await SeedHolderEntityAsync();
         var dto = new CreatePolicyDto { PolicyHolderId = holder.Id, Premium = 1000m };
 
         await _policiesService.Create(dto);
 
-        var outboxMessage = await _context.OutboxMessages.FirstOrDefaultAsync(m => m.Type == "PolicyCreated");
+        var outboxMessage = await Context.OutboxMessages.FirstOrDefaultAsync(m => m.Type == "PolicyCreated");
         Assert.NotNull(outboxMessage);
         Assert.Null(outboxMessage.ProcessedAt);
         Assert.Contains("1000", outboxMessage.Content);
