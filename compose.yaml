@@ -2,10 +2,20 @@
   api:
     image: policymanager
     depends_on:
-      - db
+      db:
+        condition: service_healthy
     build:
       context: .
       dockerfile: PolicyManager/Dockerfile
+    environment:
+      - DB_HOST=db
+      - DB_NAME=${DB_NAME:-PolicyManager}
+      - DB_USER=${DB_USER:-SA}
+      - DB_PASSWORD=${DB_PASSWORD}
+    ports:
+      - "8080:8080"
+    networks:
+      - mssql-net
   db:
     image: mcr.microsoft.com/mssql/server:2022-CU12-ubuntu-22.04
     platform: linux/amd64
@@ -21,6 +31,12 @@
       - TZ=Etc/UTC
     ports:
       - "14330:1433"
+    healthcheck:
+      test: ["CMD-SHELL", "/opt/mssql-tools/bin/sqlcmd -S localhost -U SA -P \"$$MSSQL_SA_PASSWORD\" -C -b -Q \"SELECT 1\" -o /dev/null"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 40s
     volumes:
       - ./data/mssql/data:/var/opt/mssql/data
       - ./data/mssql/log:/var/opt/mssql/log
