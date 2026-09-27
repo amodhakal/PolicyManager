@@ -55,8 +55,7 @@ public class ClaimsController(IClaimsService claimsService, IPoliciesService pol
     [HttpPost]
     public async Task<ActionResult> Create(CreateClaimDto dto, CancellationToken cancellationToken)
     {
-        var existingPolicy = await policiesService.GetById(dto.PolicyId, cancellationToken);
-        if (existingPolicy == null) return BadRequest("Policy does not exist.");
+        if (!await policiesService.ExistsAsync(dto.PolicyId, cancellationToken)) return BadRequest("Policy does not exist.");
 
         var claimId = await claimsService.Create(dto, cancellationToken);
         return CreatedAtAction(nameof(GetById), new { id = claimId }, claimId);
