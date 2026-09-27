@@ -15,8 +15,9 @@ public class ClaimsService(AppDbContext context) : IClaimsService
     /// <summary>
     ///     Retrieves all claims from the database.
     /// </summary>
+    /// <param name="cancellationToken">Token used to cancel the operation.</param>
     /// <returns>A list of all claims as ClaimDto objects.</returns>
-    public async Task<IEnumerable<ClaimDto>> GetAll()
+    public async Task<IEnumerable<ClaimDto>> GetAll(CancellationToken cancellationToken = default)
     {
         return await context.Claims
             .Select(c => new ClaimDto
@@ -26,15 +27,16 @@ public class ClaimsService(AppDbContext context) : IClaimsService
                 Amount = c.Amount,
                 Status = c.Status,
                 FiledAt = c.FiledAt
-            }).ToListAsync();
+            }).ToListAsync(cancellationToken);
     }
 
     /// <summary>
     ///     Retrieves a claim by its unique identifier.
     /// </summary>
     /// <param name="id">The claim identifier.</param>
+    /// <param name="cancellationToken">Token used to cancel the operation.</param>
     /// <returns>The claim if found; otherwise, null.</returns>
-    public async Task<ClaimDto?> GetById(int id)
+    public async Task<ClaimDto?> GetById(int id, CancellationToken cancellationToken = default)
     {
         return await context.Claims
             .Where(c => c.Id == id)
@@ -46,15 +48,16 @@ public class ClaimsService(AppDbContext context) : IClaimsService
                 Status = c.Status,
                 FiledAt = c.FiledAt
             })
-            .FirstOrDefaultAsync();
+            .FirstOrDefaultAsync(cancellationToken);
     }
 
     /// <summary>
     ///     Creates a new claim and records an outbox message transactionally.
     /// </summary>
     /// <param name="dto">The claim data transfer object.</param>
+    /// <param name="cancellationToken">Token used to cancel the operation.</param>
     /// <returns>The unique identifier of the newly created claim.</returns>
-    public async Task<int> Create(ClaimDto dto)
+    public async Task<int> Create(ClaimDto dto, CancellationToken cancellationToken = default)
     {
         var claim = new Claim
         {
@@ -73,7 +76,7 @@ public class ClaimsService(AppDbContext context) : IClaimsService
         };
         context.OutboxMessages.Add(outboxMessage);
 
-        await context.SaveChangesAsync();
+        await context.SaveChangesAsync(cancellationToken);
         return claim.Id;
     }
 
@@ -82,9 +85,10 @@ public class ClaimsService(AppDbContext context) : IClaimsService
     /// </summary>
     /// <param name="id">The claim identifier.</param>
     /// <param name="dto">The claim data containing the new status.</param>
-    public async Task UpdateStatus(int id, ClaimDto dto)
+    /// <param name="cancellationToken">Token used to cancel the operation.</param>
+    public async Task UpdateStatus(int id, ClaimDto dto, CancellationToken cancellationToken = default)
     {
-        var claim = await context.Claims.FindAsync(id);
+        var claim = await context.Claims.FindAsync([id], cancellationToken);
         if (claim == null) return;
 
         claim.Status = dto.Status;
@@ -96,6 +100,6 @@ public class ClaimsService(AppDbContext context) : IClaimsService
         };
         context.OutboxMessages.Add(outboxMessage);
 
-        await context.SaveChangesAsync();
+        await context.SaveChangesAsync(cancellationToken);
     }
 }
