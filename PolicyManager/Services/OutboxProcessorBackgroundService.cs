@@ -14,9 +14,13 @@ public class OutboxProcessorBackgroundService(
     IServiceScopeFactory scopeFactory,
     ILogger<OutboxProcessorBackgroundService> logger) : BackgroundService
 {
+    /// <summary>
+    ///     Polls the outbox table on a fixed interval and dispatches unprocessed messages.
+    /// </summary>
+    /// <param name="stoppingToken">Token used to signal host shutdown.</param>
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
     {
-        logger.logInformation("Outbox Processor Background Service started.");
+        logger.LogInformation("Outbox Processor Background Service started.");
 
         while (!stoppingToken.IsCancellationRequested)
         {
