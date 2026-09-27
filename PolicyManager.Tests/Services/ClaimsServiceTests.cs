@@ -1,32 +1,21 @@
-using Microsoft.EntityFrameworkCore;
-using PolicyManager.Data;
 using PolicyManager.DTOs;
 using PolicyManager.Models;
 using PolicyManager.Models.Enums;
 using PolicyManager.Services;
+using PolicyManager.Tests.Infrastructure;
 
 namespace PolicyManager.Tests.Services;
 
 /// <summary>
 ///     Unit tests for the ClaimsService class.
 /// </summary>
-public class ClaimsServiceTests : IDisposable
+public class ClaimsServiceTests : ServiceTestBase
 {
     private readonly ClaimsService _claimsService;
-    private readonly AppDbContext _context;
 
     public ClaimsServiceTests()
     {
-        var opts = new DbContextOptionsBuilder<AppDbContext>()
-            .UseInMemoryDatabase(Guid.NewGuid().ToString())
-            .Options;
-        _context = new AppDbContext(opts);
-        _claimsService = new ClaimsService(_context);
-    }
-
-    public void Dispose()
-    {
-        _context.Dispose();
+        _claimsService = new ClaimsService(Context);
     }
 
     /// <summary>
@@ -35,9 +24,7 @@ public class ClaimsServiceTests : IDisposable
     /// <returns>The ID of the created policy.</returns>
     private async Task<int> SeedPolicy()
     {
-        var holder = new PolicyHolder { FirstName = "Jane", LastName = "Doe", Email = "jane@example.com" };
-        _context.PolicyHolders.Add(holder);
-        await _context.SaveChangesAsync();
+        var holder = await SeedHolderEntityAsync();
 
         var policy = new Policy
         {
@@ -46,8 +33,8 @@ public class ClaimsServiceTests : IDisposable
             Status = PolicyStatus.Active
         };
 
-        _context.Policies.Add(policy);
-        await _context.SaveChangesAsync();
+        Context.Policies.Add(policy);
+        await Context.SaveChangesAsync();
         return policy.Id;
     }
 
@@ -59,7 +46,7 @@ public class ClaimsServiceTests : IDisposable
     /// <returns>The ID of the created claim.</returns>
     private async Task<int> SeedClaim(int policyId, decimal amount = 1000m)
     {
-        return await _claimsService.Create(new ClaimDto { PolicyId = policyId, Amount = amount });
+        return await _claimsService.Create(new CreateClaimDto { PolicyId = policyId, Amount = amount });
     }
 
     /// <summary>
@@ -69,8 +56,8 @@ public class ClaimsServiceTests : IDisposable
     public async Task Create_PersistsClaim_WithPendingStatus()
     {
         var policyId = await SeedPolicy();
-        var id = await _claimsService.Create(new ClaimDto { PolicyId = policyId, Amount = 2500m });
-        var claim = await _context.Claims.FindAsync(id);
+        var id = await _claimsService.Create(new CreateClaimDto { PolicyId = policyId, Amount = 2500m });
+        var claim = await Context.Claims.FindAsync(id);
 
         Assert.NotNull(claim);
         Assert.Equal(ClaimStatus.Pending, claim.Status);
@@ -87,9 +74,9 @@ public class ClaimsServiceTests : IDisposable
         var policyId = await SeedPolicy();
         var id = await SeedClaim(policyId);
 
-        await _claimsService.UpdateStatus(id, new ClaimDto { Status = ClaimStatus.Approved });
+        await _claimsService.UpdateStatus(id, new UpdateClaimStatusDto { Status = ClaimStatus.Approved });
 
-        var claim = await _context.Claims.FindAsync(id);
+        var claim = await Context.Claims.FindAsync(id);
         Assert.Equal(ClaimStatus.Approved, claim!.Status);
     }
 
@@ -102,9 +89,9 @@ public class ClaimsServiceTests : IDisposable
         var policyId = await SeedPolicy();
         var id = await SeedClaim(policyId);
 
-        await _claimsService.UpdateStatus(id, new ClaimDto { Status = ClaimStatus.Denied });
+        await _claimsService.UpdateStatus(id, new UpdateClaimStatusDto { Status = ClaimStatus.Denied });
 
-        var claim = await _context.Claims.FindAsync(id);
+        var claim = await Context.Claims.FindAsync(id);
         Assert.Equal(ClaimStatus.Denied, claim!.Status);
     }
 
@@ -115,7 +102,7 @@ public class ClaimsServiceTests : IDisposable
     public async Task UpdateStatus_NonExistentId_DoesNotThrow()
     {
         var ex = await Record.ExceptionAsync(() =>
-            _claimsService.UpdateStatus(99999, new ClaimDto { Status = ClaimStatus.Approved }));
+            _claimsService.UpdateStatus(99999, new UpdateClaimStatusDto { Status = ClaimStatus.Approved }));
         Assert.Null(ex);
     }
 
