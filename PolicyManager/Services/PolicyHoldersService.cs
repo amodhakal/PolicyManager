@@ -19,7 +19,7 @@ public class PolicyHoldersService(AppDbContext context, IMemoryCache cache) : IP
     /// <returns>A list of all policyholders.</returns>
     public async Task<IEnumerable<PolicyHolderDto>> GetAll(CancellationToken cancellationToken = default)
     {
-        if (cache.TryGetValue("policyholders:all", out IEnumerable<PolicyHolderDto>? cached)) return cached!;
+        if (cache.TryGetValue(CacheKeys.AllPolicyHolders, out IEnumerable<PolicyHolderDto>? cached)) return cached!;
 
         var holders = await context.PolicyHolders.Select(p => new PolicyHolderDto
         {
@@ -40,7 +40,7 @@ public class PolicyHoldersService(AppDbContext context, IMemoryCache cache) : IP
     /// <returns>The policyholder if found; otherwise, null.</returns>
     public async Task<PolicyHolderDto?> GetById(int id, CancellationToken cancellationToken = default)
     {
-        var key = $"policyholders:{id}";
+        var key = CacheKeys.ById(id);
         if (cache.TryGetValue(key, out PolicyHolderDto? cached)) return cached;
 
         var holder = await context.PolicyHolders.Where(p => p.Id == id)
@@ -75,8 +75,8 @@ public class PolicyHoldersService(AppDbContext context, IMemoryCache cache) : IP
 
         await context.SaveChangesAsync(cancellationToken);
 
-        cache.Remove("policyholders:all");
-        cache.Remove($"policyholders:{holder.Id}");
+        cache.Remove(CacheKeys.AllPolicyHolders);
+        cache.Remove(CacheKeys.ById(holder.Id));
         return holder.Id;
     }
 }
