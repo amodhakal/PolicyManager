@@ -49,17 +49,18 @@ public class ClaimsController(IClaimsService claimsService, IPoliciesService pol
     /// </summary>
     /// <param name="dto">The claim creation data transfer object containing claim details.</param>
     /// <param name="cancellationToken">Token used to cancel the operation.</param>
-    /// <returns>A created result with the new claim's identifier.</returns>
+    /// <returns>A created result whose body is the new claim.</returns>
     /// <response code="201">Claim created successfully.</response>
     /// <response code="400">Policy does not exist.</response>
     [HttpPost]
-    public async Task<ActionResult> Create(CreateClaimDto dto, CancellationToken cancellationToken)
+    public async Task<ActionResult<ClaimDto>> Create(CreateClaimDto dto, CancellationToken cancellationToken)
     {
         var existingPolicy = await policiesService.GetById(dto.PolicyId, cancellationToken);
         if (existingPolicy == null) return BadRequest("Policy does not exist.");
 
         var claimId = await claimsService.Create(dto, cancellationToken);
-        return CreatedAtAction(nameof(GetById), new { id = claimId }, claimId);
+        var claim = await claimsService.GetById(claimId, cancellationToken);
+        return CreatedAtAction(nameof(GetById), new { id = claimId }, claim);
     }
 
     /// <summary>
