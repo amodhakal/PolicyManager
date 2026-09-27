@@ -48,13 +48,15 @@ public class PolicyHoldersController(IPolicyHoldersService policyHoldersService)
     /// </summary>
     /// <param name="dto">The policy holder data transfer object containing holder details.</param>
     /// <param name="cancellationToken">Token used to cancel the operation.</param>
-    /// <returns>A created result with the new policyholder's identifier.</returns>
+    /// <returns>A created result whose body is the new policyholder.</returns>
     /// <response code="201">policyholder created successfully.</response>
     /// <response code="400">Invalid input or duplicate email.</response>
     [HttpPost]
-    public async Task<ActionResult> Create(CreatePolicyHolderDto dto, CancellationToken cancellationToken)
+    public async Task<ActionResult<PolicyHolderDto>> Create(
+        CreatePolicyHolderDto dto, CancellationToken cancellationToken)
     {
         var holderId = await policyHoldersService.Create(dto, cancellationToken);
-        return CreatedAtAction(nameof(GetById), new { id = holderId }, holderId);
+        var holder = await policyHoldersService.GetById(holderId, cancellationToken);
+        return CreatedAtAction(nameof(GetById), new { id = holderId }, holder);
     }
 }

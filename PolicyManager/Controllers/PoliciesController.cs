@@ -51,14 +51,15 @@ public class PoliciesController(IPoliciesService policiesService) : ControllerBa
     /// </summary>
     /// <param name="dto">The policy data transfer object containing policy details.</param>
     /// <param name="cancellationToken">Token used to cancel the operation.</param>
-    /// <returns>A created result with the new policy's identifier.</returns>
+    /// <returns>A created result whose body is the new policy.</returns>
     /// <response code="201">Policy created successfully.</response>
     /// <response code="400">Invalid input or policyholder not found.</response>
     [HttpPost]
-    public async Task<ActionResult> Create(CreatePolicyDto dto, CancellationToken cancellationToken)
+    public async Task<ActionResult<PolicyDto>> Create(CreatePolicyDto dto, CancellationToken cancellationToken)
     {
         var policyId = await policiesService.Create(dto, cancellationToken);
-        return CreatedAtAction(nameof(GetById), new { id = policyId }, policyId);
+        var policy = await policiesService.GetById(policyId, cancellationToken);
+        return CreatedAtAction(nameof(GetById), new { id = policyId }, policy);
     }
 
     /// <summary>
