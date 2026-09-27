@@ -78,7 +78,10 @@ public class PoliciesService(AppDbContext context) : IPoliciesService
         {
             Premium = dto.Premium,
             Status = PolicyStatus.Active,
-            PolicyHolderId = dto.PolicyHolderId
+            PolicyHolderId = dto.PolicyHolderId,
+            Type = dto.Type,
+            StartDate = dto.StartDate,
+            EndDate = dto.EndDate
         };
 
         context.Policies.Add(policy);
