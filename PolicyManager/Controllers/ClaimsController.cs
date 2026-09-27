@@ -19,12 +19,13 @@ public class ClaimsController(IClaimsService claimsService, IPoliciesService pol
     /// <summary>
     ///     Retrieves all claims.
     /// </summary>
+    /// <param name="cancellationToken">Token used to cancel the operation.</param>
     /// <returns>A list of all claims.</returns>
     /// <response code="200">Returns the list of claims.</response>
     [HttpGet]
-    public async Task<ActionResult<IEnumerable<ClaimDto>>> GetAll()
+    public async Task<ActionResult<IEnumerable<ClaimDto>>> GetAll(CancellationToken cancellationToken)
     {
-        var claims = await claimsService.GetAll();
+        var claims = await claimsService.GetAll(cancellationToken);
         return Ok(claims);
     }
 
@@ -32,13 +33,14 @@ public class ClaimsController(IClaimsService claimsService, IPoliciesService pol
     ///     Retrieves a claim by its unique identifier.
     /// </summary>
     /// <param name="id">The claim identifier.</param>
+    /// <param name="cancellationToken">Token used to cancel the operation.</param>
     /// <returns>The claim if found; otherwise, not found.</returns>
     /// <response code="200">Returns the claim.</response>
     /// <response code="404">Claim not found.</response>
     [HttpGet("{id:int}")]
-    public async Task<ActionResult<ClaimDto>> GetById(int id)
+    public async Task<ActionResult<ClaimDto>> GetById(int id, CancellationToken cancellationToken)
     {
-        var claim = await claimsService.GetById(id);
+        var claim = await claimsService.GetById(id, cancellationToken);
         return claim == null ? NotFound() : Ok(claim);
     }
 
@@ -46,16 +48,17 @@ public class ClaimsController(IClaimsService claimsService, IPoliciesService pol
     ///     Creates a new claim.
     /// </summary>
     /// <param name="dto">The claim data transfer object containing claim details.</param>
+    /// <param name="cancellationToken">Token used to cancel the operation.</param>
     /// <returns>A created result with the new claim's identifier.</returns>
     /// <response code="201">Claim created successfully.</response>
     /// <response code="400">Policy does not exist.</response>
     [HttpPost]
-    public async Task<ActionResult> Create(ClaimDto dto)
+    public async Task<ActionResult> Create(ClaimDto dto, CancellationToken cancellationToken)
     {
-        var existingPolicy = await policiesService.GetById(dto.PolicyId);
+        var existingPolicy = await policiesService.GetById(dto.PolicyId, cancellationToken);
         if (existingPolicy == null) return BadRequest("Policy does not exist.");
 
-        var claimId = await claimsService.Create(dto);
+        var claimId = await claimsService.Create(dto, cancellationToken);
         return CreatedAtAction(nameof(GetById), new { id = claimId }, claimId);
     }
 
@@ -64,13 +67,14 @@ public class ClaimsController(IClaimsService claimsService, IPoliciesService pol
     /// </summary>
     /// <param name="id">The claim identifier.</param>
     /// <param name="dto">The claim data containing the new status.</param>
+    /// <param name="cancellationToken">Token used to cancel the operation.</param>
     /// <returns>No content if successful.</returns>
     /// <response code="200">Status updated successfully.</response>
     /// <response code="404">Claim not found.</response>
     [HttpPatch("{id:int}/status")]
-    public async Task<ActionResult> UpdateStatus(int id, ClaimDto dto)
+    public async Task<ActionResult> UpdateStatus(int id, ClaimDto dto, CancellationToken cancellationToken)
     {
-        await claimsService.UpdateStatus(id, dto);
+        await claimsService.UpdateStatus(id, dto, cancellationToken);
         return Ok();
     }
 }

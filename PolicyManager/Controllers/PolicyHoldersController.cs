@@ -18,12 +18,13 @@ public class PolicyHoldersController(IPolicyHoldersService policyHoldersService)
     /// <summary>
     ///     Retrieves all policyholders.
     /// </summary>
+    /// <param name="cancellationToken">Token used to cancel the operation.</param>
     /// <returns>A list of all policyholders.</returns>
     /// <response code="200">Returns the list of policyholders.</response>
     [HttpGet]
-    public async Task<ActionResult<IEnumerable<PolicyHolderDto>>> GetAll()
+    public async Task<ActionResult<IEnumerable<PolicyHolderDto>>> GetAll(CancellationToken cancellationToken)
     {
-        var holders = await policyHoldersService.GetAll();
+        var holders = await policyHoldersService.GetAll(cancellationToken);
         return Ok(holders);
     }
 
@@ -31,13 +32,14 @@ public class PolicyHoldersController(IPolicyHoldersService policyHoldersService)
     ///     Retrieves a policyholder by their unique identifier.
     /// </summary>
     /// <param name="id">The policyholder identifier.</param>
+    /// <param name="cancellationToken">Token used to cancel the operation.</param>
     /// <returns>The policyholder if found; otherwise, not found.</returns>
     /// <response code="200">Returns the policyholder.</response>
     /// <response code="404">policyholder not found.</response>
     [HttpGet("{id:int}")]
-    public async Task<ActionResult<PolicyHolderDto>> GetById(int id)
+    public async Task<ActionResult<PolicyHolderDto>> GetById(int id, CancellationToken cancellationToken)
     {
-        var holder = await policyHoldersService.GetById(id);
+        var holder = await policyHoldersService.GetById(id, cancellationToken);
         return holder == null ? NotFound() : Ok(holder);
     }
 
@@ -45,13 +47,14 @@ public class PolicyHoldersController(IPolicyHoldersService policyHoldersService)
     ///     Creates a new policyholder.
     /// </summary>
     /// <param name="dto">The policy holder data transfer object containing holder details.</param>
+    /// <param name="cancellationToken">Token used to cancel the operation.</param>
     /// <returns>A created result with the new policyholder's identifier.</returns>
     /// <response code="201">policyholder created successfully.</response>
     /// <response code="400">Invalid input or duplicate email.</response>
     [HttpPost]
-    public async Task<ActionResult> Create(CreatePolicyHolderDto dto)
+    public async Task<ActionResult> Create(CreatePolicyHolderDto dto, CancellationToken cancellationToken)
     {
-        var holderId = await policyHoldersService.Create(dto);
+        var holderId = await policyHoldersService.Create(dto, cancellationToken);
         return CreatedAtAction(nameof(GetById), new { id = holderId }, holderId);
     }
 }
