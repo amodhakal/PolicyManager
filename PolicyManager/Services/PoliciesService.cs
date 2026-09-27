@@ -56,6 +56,17 @@ public class PoliciesService(AppDbContext context) : IPoliciesService
     }
 
     /// <summary>
+    ///     Determines whether a policy with the given identifier exists.
+    /// </summary>
+    /// <param name="id">The policy identifier.</param>
+    /// <param name="cancellationToken">Token used to cancel the operation.</param>
+    /// <returns>True if a policy with the identifier exists; otherwise, false.</returns>
+    public async Task<bool> ExistsAsync(int id, CancellationToken cancellationToken = default)
+    {
+        return await context.Policies.AnyAsync(p => p.Id == id, cancellationToken);
+    }
+
+    /// <summary>
     ///     Creates a new policy and records an outbox message transactionally.
     /// </summary>
     /// <param name="dto">The policy data transfer object.</param>
