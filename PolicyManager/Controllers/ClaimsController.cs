@@ -47,13 +47,13 @@ public class ClaimsController(IClaimsService claimsService, IPoliciesService pol
     /// <summary>
     ///     Creates a new claim.
     /// </summary>
-    /// <param name="dto">The claim data transfer object containing claim details.</param>
+    /// <param name="dto">The claim creation data transfer object containing claim details.</param>
     /// <param name="cancellationToken">Token used to cancel the operation.</param>
     /// <returns>A created result with the new claim's identifier.</returns>
     /// <response code="201">Claim created successfully.</response>
     /// <response code="400">Policy does not exist.</response>
     [HttpPost]
-    public async Task<ActionResult> Create(ClaimDto dto, CancellationToken cancellationToken)
+    public async Task<ActionResult> Create(CreateClaimDto dto, CancellationToken cancellationToken)
     {
         var existingPolicy = await policiesService.GetById(dto.PolicyId, cancellationToken);
         if (existingPolicy == null) return BadRequest("Policy does not exist.");
@@ -66,13 +66,13 @@ public class ClaimsController(IClaimsService claimsService, IPoliciesService pol
     ///     Updates the status of an existing claim.
     /// </summary>
     /// <param name="id">The claim identifier.</param>
-    /// <param name="dto">The claim data containing the new status.</param>
+    /// <param name="dto">The claim status update data transfer object containing the new status.</param>
     /// <param name="cancellationToken">Token used to cancel the operation.</param>
     /// <returns>No content if successful.</returns>
     /// <response code="200">Status updated successfully.</response>
     /// <response code="404">Claim not found.</response>
     [HttpPatch("{id:int}/status")]
-    public async Task<ActionResult> UpdateStatus(int id, ClaimDto dto, CancellationToken cancellationToken)
+    public async Task<ActionResult> UpdateStatus(int id, UpdateClaimStatusDto dto, CancellationToken cancellationToken)
     {
         await claimsService.UpdateStatus(id, dto, cancellationToken);
         return Ok();

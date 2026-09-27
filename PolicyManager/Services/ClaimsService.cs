@@ -23,8 +23,10 @@ public class ClaimsService(AppDbContext context) : IClaimsService
             .Select(c => new ClaimDto
             {
                 Id = c.Id,
+                ClaimNumber = c.ClaimNumber,
                 PolicyId = c.PolicyId,
                 Amount = c.Amount,
+                Description = c.Description,
                 Status = c.Status,
                 FiledAt = c.FiledAt
             }).ToListAsync(cancellationToken);
@@ -43,8 +45,10 @@ public class ClaimsService(AppDbContext context) : IClaimsService
             .Select(c => new ClaimDto
             {
                 Id = c.Id,
+                ClaimNumber = c.ClaimNumber,
                 PolicyId = c.PolicyId,
                 Amount = c.Amount,
+                Description = c.Description,
                 Status = c.Status,
                 FiledAt = c.FiledAt
             })
@@ -54,15 +58,16 @@ public class ClaimsService(AppDbContext context) : IClaimsService
     /// <summary>
     ///     Creates a new claim and records an outbox message transactionally.
     /// </summary>
-    /// <param name="dto">The claim data transfer object.</param>
+    /// <param name="dto">The claim creation data transfer object.</param>
     /// <param name="cancellationToken">Token used to cancel the operation.</param>
     /// <returns>The unique identifier of the newly created claim.</returns>
-    public async Task<int> Create(ClaimDto dto, CancellationToken cancellationToken = default)
+    public async Task<int> Create(CreateClaimDto dto, CancellationToken cancellationToken = default)
     {
         var claim = new Claim
         {
             PolicyId = dto.PolicyId,
             Amount = dto.Amount,
+            Description = dto.Description,
             Status = ClaimStatus.Pending,
             FiledAt = DateTime.UtcNow
         };
@@ -84,9 +89,9 @@ public class ClaimsService(AppDbContext context) : IClaimsService
     ///     Updates the status of an existing claim and records an outbox message.
     /// </summary>
     /// <param name="id">The claim identifier.</param>
-    /// <param name="dto">The claim data containing the new status.</param>
+    /// <param name="dto">The claim status update data transfer object containing the new status.</param>
     /// <param name="cancellationToken">Token used to cancel the operation.</param>
-    public async Task UpdateStatus(int id, ClaimDto dto, CancellationToken cancellationToken = default)
+    public async Task UpdateStatus(int id, UpdateClaimStatusDto dto, CancellationToken cancellationToken = default)
     {
         var claim = await context.Claims.FindAsync([id], cancellationToken);
         if (claim == null) return;
