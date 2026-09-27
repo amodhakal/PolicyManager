@@ -8,7 +8,8 @@ namespace PolicyManager.Services;
 public interface IPolicyHoldersService
 {
     /// <summary>
-    ///     Retrieves all policy holders from the database.
+    ///     Retrieves all policy holders, from the cache when a cached collection is present and from the database
+    ///     otherwise.
     /// </summary>
     /// <param name="cancellationToken">Token used to cancel the operation.</param>
     /// <returns>A list of all policy holders.</returns>
