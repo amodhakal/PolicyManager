@@ -20,12 +20,14 @@ public class PoliciesController(IPoliciesService policiesService) : ControllerBa
     ///     Retrieves all policies, optionally filtered by status.
     /// </summary>
     /// <param name="status">Optional status filter for policies.</param>
+    /// <param name="cancellationToken">Token used to cancel the operation.</param>
     /// <returns>A list of policies matching the filter criteria.</returns>
     /// <response code="200">Returns the list of policies.</response>
     [HttpGet]
-    public async Task<ActionResult<IEnumerable<PolicyDto>>> GetAll([FromQuery] PolicyStatus? status)
+    public async Task<ActionResult<IEnumerable<PolicyDto>>> GetAll(
+        [FromQuery] PolicyStatus? status, CancellationToken cancellationToken)
     {
-        var policies = await policiesService.GetAll(status);
+        var policies = await policiesService.GetAll(status, cancellationToken);
         return Ok(policies);
     }
 
@@ -33,13 +35,14 @@ public class PoliciesController(IPoliciesService policiesService) : ControllerBa
     ///     Retrieves a policy by its unique identifier.
     /// </summary>
     /// <param name="id">The policy identifier.</param>
+    /// <param name="cancellationToken">Token used to cancel the operation.</param>
     /// <returns>The policy if found; otherwise, not found.</returns>
     /// <response code="200">Returns the policy.</response>
     /// <response code="404">Policy not found.</response>
     [HttpGet("{id:int}")]
-    public async Task<ActionResult<PolicyDto>> GetById(int id)
+    public async Task<ActionResult<PolicyDto>> GetById(int id, CancellationToken cancellationToken)
     {
-        var policy = await policiesService.GetById(id);
+        var policy = await policiesService.GetById(id, cancellationToken);
         return policy == null ? NotFound() : Ok(policy);
     }
 
@@ -47,13 +50,14 @@ public class PoliciesController(IPoliciesService policiesService) : ControllerBa
     ///     Creates a new policy.
     /// </summary>
     /// <param name="dto">The policy data transfer object containing policy details.</param>
+    /// <param name="cancellationToken">Token used to cancel the operation.</param>
     /// <returns>A created result with the new policy's identifier.</returns>
     /// <response code="201">Policy created successfully.</response>
     /// <response code="400">Invalid input or policyholder not found.</response>
     [HttpPost]
-    public async Task<ActionResult> Create(CreatePolicyDto dto)
+    public async Task<ActionResult> Create(CreatePolicyDto dto, CancellationToken cancellationToken)
     {
-        var policyId = await policiesService.Create(dto);
+        var policyId = await policiesService.Create(dto, cancellationToken);
         return CreatedAtAction(nameof(GetById), new { id = policyId }, policyId);
     }
 
@@ -62,13 +66,14 @@ public class PoliciesController(IPoliciesService policiesService) : ControllerBa
     /// </summary>
     /// <param name="id">The policy identifier.</param>
     /// <param name="dto">The policy data transfer object containing updated details.</param>
+    /// <param name="cancellationToken">Token used to cancel the operation.</param>
     /// <returns>No content if successful.</returns>
     /// <response code="200">Policy updated successfully.</response>
     /// <response code="404">Policy not found.</response>
     [HttpPut("{id:int}")]
-    public async Task<ActionResult> Update(int id, UpdatePolicyDto dto)
+    public async Task<ActionResult> Update(int id, UpdatePolicyDto dto, CancellationToken cancellationToken)
     {
-        await policiesService.Update(id, dto);
+        await policiesService.Update(id, dto, cancellationToken);
         return Ok();
     }
 
@@ -76,13 +81,14 @@ public class PoliciesController(IPoliciesService policiesService) : ControllerBa
     ///     Cancels an existing policy.
     /// </summary>
     /// <param name="id">The policy identifier.</param>
+    /// <param name="cancellationToken">Token used to cancel the operation.</param>
     /// <returns>No content if successful.</returns>
     /// <response code="200">Policy canceled successfully.</response>
     /// <response code="404">Policy not found.</response>
     [HttpDelete("{id:int}")]
-    public async Task<ActionResult> Cancel(int id)
+    public async Task<ActionResult> Cancel(int id, CancellationToken cancellationToken)
     {
-        await policiesService.Cancel(id);
+        await policiesService.Cancel(id, cancellationToken);
         return Ok();
     }
 }

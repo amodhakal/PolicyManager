@@ -15,8 +15,9 @@ public class PolicyHoldersService(AppDbContext context, IMemoryCache cache) : IP
     /// <summary>
     ///     Retrieves all policyholders from the database.
     /// </summary>
+    /// <param name="cancellationToken">Token used to cancel the operation.</param>
     /// <returns>A list of all policyholders.</returns>
-    public async Task<IEnumerable<PolicyHolderDto>> GetAll()
+    public async Task<IEnumerable<PolicyHolderDto>> GetAll(CancellationToken cancellationToken = default)
     {
         if (cache.TryGetValue("policyholders:all", out IEnumerable<PolicyHolderDto>? cached)) return cached!;
 
@@ -26,7 +27,7 @@ public class PolicyHoldersService(AppDbContext context, IMemoryCache cache) : IP
             FirstName = p.FirstName,
             LastName = p.LastName,
             Email = p.Email
-        }).ToListAsync();
+        }).ToListAsync(cancellationToken);
 
         return holders;
     }
@@ -35,8 +36,9 @@ public class PolicyHoldersService(AppDbContext context, IMemoryCache cache) : IP
     ///     Retrieves a policyholder by their unique identifier.
     /// </summary>
     /// <param name="id">The policyholder identifier.</param>
+    /// <param name="cancellationToken">Token used to cancel the operation.</param>
     /// <returns>The policyholder if found; otherwise, null.</returns>
-    public async Task<PolicyHolderDto?> GetById(int id)
+    public async Task<PolicyHolderDto?> GetById(int id, CancellationToken cancellationToken = default)
     {
         var key = $"policyholders:{id}";
         if (cache.TryGetValue(key, out PolicyHolderDto? cached)) return cached;
@@ -44,7 +46,7 @@ public class PolicyHoldersService(AppDbContext context, IMemoryCache cache) : IP
         var holder = await context.PolicyHolders.Where(p => p.Id == id)
             .Select(p => new PolicyHolderDto
                 { Id = p.Id, FirstName = p.FirstName, LastName = p.LastName, Email = p.Email })
-            .FirstOrDefaultAsync();
+            .FirstOrDefaultAsync(cancellationToken);
 
         if (holder != null) cache.Set(key, holder, TimeSpan.FromMinutes(5));
 
@@ -55,8 +57,9 @@ public class PolicyHoldersService(AppDbContext context, IMemoryCache cache) : IP
     ///     Creates a new policyholder and records an outbox message transactionally.
     /// </summary>
     /// <param name="dto">The policyholder data transfer object.</param>
+    /// <param name="cancellationToken">Token used to cancel the operation.</param>
     /// <returns>The unique identifier of the newly created policyholder.</returns>
-    public async Task<int> Create(CreatePolicyHolderDto dto)
+    public async Task<int> Create(CreatePolicyHolderDto dto, CancellationToken cancellationToken = default)
     {
         var holder = new PolicyHolder
             { FirstName = dto.FirstName, LastName = dto.LastName, Email = dto.Email };
@@ -70,7 +73,7 @@ public class PolicyHoldersService(AppDbContext context, IMemoryCache cache) : IP
         };
         context.OutboxMessages.Add(outboxMessage);
 
-        await context.SaveChangesAsync();
+        await context.SaveChangesAsync(cancellationToken);
 
         cache.Remove("policyholders:all");
         cache.Remove($"policyholders:{holder.Id}");
