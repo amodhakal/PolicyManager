@@ -101,7 +101,7 @@ public abstract class ApiIntegrationTestBase : IAsyncLifetime
     protected async Task<int> SeedPolicyAsync(int holderId, decimal premium = 500m)
     {
         var res = await Client.PostAsJsonAsync("/api/policies",
-            new CreatePolicyDto { PolicyHolderId = holderId, Premium = premium, StartDate = new DateTime(2026, 1, 1), EndDate = new DateTime(2027, 1, 1) });
+            new CreatePolicyDto { Type = Models.Enums.PolicyType.Auto, PolicyHolderId = holderId, Premium = premium, StartDate = new DateTime(2026, 1, 1), EndDate = new DateTime(2027, 1, 1) });
 
         Assert.Equal(HttpStatusCode.Created, res.StatusCode);
         return await ReadCreatedIdAsync<PolicyDto>(res, p => p.Id);

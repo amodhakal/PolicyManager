@@ -147,7 +147,8 @@ public class ClaimsService(AppDbContext context) : IClaimsService
         var claim = await context.Claims.FindAsync([id], cancellationToken);
         if (claim == null) return;
 
-        claim.Status = dto.Status;
+        claim.Status = dto.Status ?? throw new InvalidOperationException(
+            $"{nameof(UpdateClaimStatusDto.Status)} is required and was not supplied.");
 
         await context.SaveWithOutboxAsync(
             claim,

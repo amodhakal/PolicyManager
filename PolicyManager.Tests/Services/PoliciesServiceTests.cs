@@ -26,7 +26,7 @@ public class PoliciesServiceTests : ServiceTestBase
     /// <returns>The ID of the created policy.</returns>
     private async Task<int> SeedPolicy(int holderId, PolicyStatus status = PolicyStatus.Active)
     {
-        return await _policiesService.Create(new CreatePolicyDto { PolicyHolderId = holderId, Premium = 500m, StartDate = new DateTime(2026, 1, 1), EndDate = new DateTime(2027, 1, 1) });
+        return await _policiesService.Create(new CreatePolicyDto { Type = Models.Enums.PolicyType.Auto, PolicyHolderId = holderId, Premium = 500m, StartDate = new DateTime(2026, 1, 1), EndDate = new DateTime(2027, 1, 1) });
     }
 
     /// <summary>
@@ -36,7 +36,7 @@ public class PoliciesServiceTests : ServiceTestBase
     public async Task Create_ReturnsNewId_AndPersists()
     {
         var holder = await SeedHolderEntityAsync();
-        var dto = new CreatePolicyDto { PolicyHolderId = holder.Id, Premium = 750m, StartDate = new DateTime(2026, 1, 1), EndDate = new DateTime(2027, 1, 1) };
+        var dto = new CreatePolicyDto { Type = Models.Enums.PolicyType.Auto, PolicyHolderId = holder.Id, Premium = 750m, StartDate = new DateTime(2026, 1, 1), EndDate = new DateTime(2027, 1, 1) };
 
         var id = await _policiesService.Create(dto);
         var saved = await Context.Policies.FindAsync(id);
@@ -148,7 +148,7 @@ public class PoliciesServiceTests : ServiceTestBase
     public async Task Create_WritesOutboxMessage()
     {
         var holder = await SeedHolderEntityAsync();
-        var dto = new CreatePolicyDto { PolicyHolderId = holder.Id, Premium = 1000m, StartDate = new DateTime(2026, 1, 1), EndDate = new DateTime(2027, 1, 1) };
+        var dto = new CreatePolicyDto { Type = Models.Enums.PolicyType.Auto, PolicyHolderId = holder.Id, Premium = 1000m, StartDate = new DateTime(2026, 1, 1), EndDate = new DateTime(2027, 1, 1) };
 
         await _policiesService.Create(dto);
 

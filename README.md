@@ -317,6 +317,19 @@ gets a `307` rather than a verdict. Point probes at the HTTPS endpoint. (With no
 configured — the container, which is published on `http://localhost:8080` — the redirection is a
 logged no-op and `/health` answers directly.)
 
+### Omitted fields are rejected, not defaulted
+
+Every enum in this domain starts at a meaningful value: `PolicyType.Auto`, `PolicyStatus.Active`
+and `ClaimStatus.Pending` are all `0`. A non-nullable property therefore cannot distinguish "the
+caller sent the first member" from "the caller sent nothing" — both bind to the same value. So
+`CreatePolicyDto.Type` and `UpdateClaimStatusDto.Status` are nullable with `[Required]`, and an
+omitted field is a 400 rather than a silent default.
+
+`PUT /api/policies/{id}` applies only the fields supplied. Omitting `status` used to reset a
+cancelled policy to `Active`, because a non-nullable enum bound the omission to its zero member;
+omitting `premium` used to set it to `0`. A request that supplies neither is rejected as a no-op
+rather than reported as a success.
+
 ---
 
 ## Project Structure

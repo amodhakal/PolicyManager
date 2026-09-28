@@ -142,7 +142,8 @@ public class PoliciesService(AppDbContext context) : IPoliciesService
             Premium = dto.Premium,
             Status = PolicyStatus.Active,
             PolicyHolderId = dto.PolicyHolderId,
-            Type = dto.Type,
+            Type = dto.Type ?? throw new InvalidOperationException(
+                $"{nameof(CreatePolicyDto.Type)} is required and was not supplied."),
             StartDate = dto.StartDate,
             EndDate = dto.EndDate
         };
@@ -167,8 +168,10 @@ public class PoliciesService(AppDbContext context) : IPoliciesService
         var policy = await context.Policies.FindAsync([id], cancellationToken);
         if (policy == null) return;
 
-        policy.Status = dto.Status;
-        policy.Premium = dto.Premium;
+        // Applied conditionally: a field the caller omitted must leave the stored value alone rather
+        // than overwrite it with a type default.
+        if (dto.Status is not null) policy.Status = dto.Status.Value;
+        if (dto.Premium is not null) policy.Premium = dto.Premium.Value;
 
         await context.SaveWithOutboxAsync(
             policy,

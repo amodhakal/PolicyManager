@@ -84,6 +84,7 @@ public class PaginationTests : ServiceTestBase
 
         return await _policiesService.Create(new CreatePolicyDto
         {
+            Type = Models.Enums.PolicyType.Auto,
             PolicyHolderId = holder.Id,
             Premium = premium,
             StartDate = new DateTime(2026, 1, 1),
