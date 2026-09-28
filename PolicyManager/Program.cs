@@ -7,6 +7,7 @@ using Microsoft.AspNetCore.Diagnostics.HealthChecks;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.DependencyInjection.Extensions;
 using Microsoft.Extensions.Diagnostics.HealthChecks;
+using Microsoft.Extensions.Options;
 using Microsoft.OpenApi;
 using PolicyManager.Configuration;
 using PolicyManager.Data;
@@ -40,6 +41,10 @@ builder.Services.AddProblemDetails(options =>
 });
 
 builder.Services.AddExceptionHandler<GlobalExceptionHandler>();
+
+builder.Services.Configure<JwtOptions>(builder.Configuration.GetSection(JwtOptions.SectionName));
+builder.Services.AddBearerAuthentication();
+builder.Services.AddPolicyAuthorization();
 
 // Versioning is configured before MVC so the API explorer can read it, and both are additive: the
 // unversioned routes still exist and still mean 1.0. ReportApiVersions makes every response say which
@@ -137,6 +142,12 @@ builder.Services.AddHostedService<OutboxProcessorBackgroundService>();
 
 var app = builder.Build();
 
+// Fails fast at startup rather than at the first request. A deployment that has not supplied a
+// signing key must not come up and quietly accept unsigned tokens, and must not come up with
+// authentication switched off and looking healthy while doing so. Resolved from the built host so
+// the check sees the finished configuration, including any source registered after this point.
+app.Services.GetRequiredService<IOptions<JwtOptions>>().Value.Validate();
+
 if (app.Environment.IsDevelopment())
 {
     app.UseSwagger();
@@ -166,6 +177,10 @@ app.UseRouting();
 // signed blob that costs real CPU to check, and verifying one per rejected request would let an
 // unauthenticated caller spend the very CPU the limiter exists to protect.
 app.UseRateLimiter();
+
+// Ahead of UseAuthorization, which is what actually evaluates the policies, and behind the rate
+// limiter so a flood is shed before a token is validated.
+app.UseAuthentication();
 app.UseAuthorization();
 
 app.MapControllers();

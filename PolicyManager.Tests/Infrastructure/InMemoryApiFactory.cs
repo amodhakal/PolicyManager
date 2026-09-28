@@ -2,6 +2,7 @@ using Microsoft.AspNetCore.Hosting;
 using Microsoft.AspNetCore.Mvc.Testing;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Diagnostics;
+using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 using PolicyManager.Data;
 
@@ -19,6 +20,30 @@ namespace PolicyManager.Tests.Infrastructure;
 public class InMemoryApiFactory : WebApplicationFactory<Program>
 {
     private readonly string _databaseName = Guid.NewGuid().ToString();
+
+    /// <summary>
+    ///     Signs requests with an admin token by default, so tests that are not about authorization
+    ///     do not each have to arrange it.
+    /// </summary>
+    /// <remarks>
+    ///     The token is real — signed with the key the host was configured with and validated by
+    ///     the production pipeline — rather than a stubbed authentication handler. A stub would keep
+    ///     the suite green if the signature, issuer, audience, lifetime or role claim were all wrong.
+    ///     Set <c>false</c> to get an unauthenticated client, which is what the authorization tests
+    ///     need in order to observe a 401.
+    /// </remarks>
+    public bool AuthenticateByDefault { get; set; } = true;
+
+    /// <summary>
+    ///     The roles the default client is authenticated with.
+    /// </summary>
+    public string[] DefaultRoles { get; set; } = [PolicyManager.Services.PolicyRoles.Admin];
+
+    /// <summary>
+    ///     The subject the default client's token identifies. It ends up in the audit columns, so
+    ///     tests that assert on the actor set it deliberately.
+    /// </summary>
+    public string DefaultSubject { get; set; } = "test-user";
 
     /// <summary>
     ///     Extra host configuration for the test that owns this factory, applied after the database
@@ -51,6 +76,30 @@ public class InMemoryApiFactory : WebApplicationFactory<Program>
                 .ConfigureWarnings(w => w.Ignore(InMemoryEventId.TransactionIgnoredWarning)));
         });
 
+        // Always supplied, so a test host cannot come up with authentication unconfigured. The
+        // application refuses to start in that state, which would otherwise turn every test into a
+        // startup-failure test rather than a test of the thing under test.
+        builder.ConfigureAppConfiguration((_, configuration) =>
+            configuration.AddInMemoryCollection(TestTokens.HostConfiguration()));
+
         ConfigureHost?.Invoke(builder);
+    }
+
+    /// <summary>
+    ///     Creates a client, authenticated unless the factory says otherwise.
+    /// </summary>
+    /// <returns>A client for the test server.</returns>
+    public new HttpClient CreateAuthenticatedClient()
+    {
+        var client = CreateClient();
+
+        if (AuthenticateByDefault)
+        {
+            client.DefaultRequestHeaders.Authorization = new System.Net.Http.Headers.AuthenticationHeaderValue(
+                "Bearer",
+                TestTokens.Mint(DefaultSubject, DefaultRoles));
+        }
+
+        return client;
     }
 }

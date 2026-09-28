@@ -1,4 +1,5 @@
 using Asp.Versioning;
+using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 using PolicyManager.Configuration;
 using PolicyManager.DTOs;
@@ -20,6 +21,7 @@ namespace PolicyManager.Controllers;
 // would be a breaking change dressed up as a version introduction.
 [Route("api/v{version:apiVersion}/[controller]")]
 [ApiVersion(ApiVersions.V1)]
+[Authorize(Policy = AuthorizationPolicies.AnyRole)]
 public class PolicyHoldersController(IPolicyHoldersService policyHoldersService) : ControllerBase
 {
     /// <summary>
@@ -65,7 +67,11 @@ public class PolicyHoldersController(IPolicyHoldersService policyHoldersService)
     /// <returns>A created result whose body is the new policyholder.</returns>
     /// <response code="201">policyholder created successfully.</response>
     /// <response code="400">Invalid input.</response>
+    /// <response code="401">No bearer token was presented.</response>
+    /// <response code="403">The token does not carry a role allowed to do this.</response>
     /// <response code="409">A policyholder with the same email already exists.</response>
+    // Registering a holder is back-office work, not something the front line does.
+    [Authorize(Policy = AuthorizationPolicies.AdminOrAdjuster)]
     [HttpPost]
     public async Task<ActionResult<PolicyHolderDto>> Create(
         CreatePolicyHolderDto dto, CancellationToken cancellationToken)

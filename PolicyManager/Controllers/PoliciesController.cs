@@ -1,4 +1,5 @@
 using Asp.Versioning;
+using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 using PolicyManager.Configuration;
 using PolicyManager.DTOs;
@@ -21,6 +22,7 @@ namespace PolicyManager.Controllers;
 // would be a breaking change dressed up as a version introduction.
 [Route("api/v{version:apiVersion}/[controller]")]
 [ApiVersion(ApiVersions.V1)]
+[Authorize(Policy = AuthorizationPolicies.AnyRole)]
 public class PoliciesController(IPoliciesService policiesService) : ControllerBase
 {
     /// <summary>
@@ -72,7 +74,11 @@ public class PoliciesController(IPoliciesService policiesService) : ControllerBa
     /// <param name="cancellationToken">Token used to cancel the operation.</param>
     /// <returns>A created result whose body is the new policy.</returns>
     /// <response code="201">Policy created successfully.</response>
+    /// <response code="400">Invalid input.</response>
+    /// <response code="401">No bearer token was presented.</response>
+    /// <response code="403">The token does not carry a role allowed to do this.</response>
     /// <response code="404">The referenced policyholder does not exist.</response>
+    [Authorize(Policy = AuthorizationPolicies.AdminOrAdjuster)]
     [HttpPost]
     public async Task<ActionResult<PolicyDto>> Create(CreatePolicyDto dto, CancellationToken cancellationToken)
     {
@@ -91,6 +97,7 @@ public class PoliciesController(IPoliciesService policiesService) : ControllerBa
     /// <response code="200">Policy updated successfully.</response>
     /// <response code="404">Policy not found.</response>
     /// <response code="409">The policy changed since it was read.</response>
+    [Authorize(Policy = AuthorizationPolicies.AdminOrAdjuster)]
     [HttpPut("{id:int}")]
     public async Task<ActionResult> Update(int id, UpdatePolicyDto dto, CancellationToken cancellationToken)
     {
@@ -111,6 +118,9 @@ public class PoliciesController(IPoliciesService policiesService) : ControllerBa
     /// <response code="200">Policy canceled successfully.</response>
     /// <response code="404">Policy not found.</response>
     /// <response code="409">The policy changed since it was read.</response>
+    // Cancelling is a commercial decision — it ends cover and may need to be honoured retroactively
+    // — so it is narrower than the other writes.
+    [Authorize(Policy = AuthorizationPolicies.AdminOnly)]
     [HttpDelete("{id:int}")]
     public async Task<ActionResult> Cancel(
         int id,

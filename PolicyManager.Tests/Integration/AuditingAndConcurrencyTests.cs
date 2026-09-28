@@ -19,6 +19,20 @@ namespace PolicyManager.Tests.Integration;
 /// </remarks>
 public class AuditingAndConcurrencyTests : ApiIntegrationTestBase
 {
+    /// <summary>
+    ///     The subject the default test client's token identifies, and therefore the actor these
+    ///     tests expect to see recorded.
+    /// </summary>
+    private const string Subject = "audit-test-user";
+
+    /// <inheritdoc />
+    public override async Task InitializeAsync()
+    {
+        // Set before the client is created, since the subject is baked into its token.
+        Factory.DefaultSubject = Subject;
+        await base.InitializeAsync();
+    }
+
     [Fact]
     public async Task An_untouched_policy_reports_no_update_timestamp()
     {
@@ -43,8 +57,11 @@ public class AuditingAndConcurrencyTests : ApiIntegrationTestBase
 
         Assert.Equal(750m, policy!.Premium);
         Assert.NotNull(policy.UpdatedAt);
-        // Nothing is authenticated, so the write is attributed to the fixed system token.
-        Assert.Equal("system", policy.UpdatedBy);
+
+        // The actor comes from the authenticated token, not from a constant. Asserted against the
+        // subject the factory's token carries, so a regression that made the audit fall back to
+        // "system" for an authenticated write would fail here.
+        Assert.Equal(Subject, policy.UpdatedBy);
     }
 
     [Fact]
@@ -129,7 +146,7 @@ public class AuditingAndConcurrencyTests : ApiIntegrationTestBase
         var claim = await Client.GetFromJsonAsync<ClaimDto>($"/api/claims/{claimId}");
 
         Assert.NotNull(claim!.UpdatedAt);
-        Assert.Equal("system", claim.UpdatedBy);
+        Assert.Equal(Subject, claim.UpdatedBy);
     }
 
     private async Task<PolicyDto?> GetPolicyAsync(int id)

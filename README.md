@@ -453,6 +453,87 @@ it, so they stayed invisible to every list reader until the entry expired.
 
 ---
 
+## Authentication and Authorization
+
+Every endpoint requires a bearer token. There is no anonymous read access: a leaked identifier is
+still a disclosure, and a policyholder's email address is personal data.
+
+```http
+Authorization: Bearer <jwt>
+```
+
+### Configuration
+
+```json
+"Jwt": {
+  "Issuer": "policy-manager",
+  "Audience": "policy-manager-api",
+  "ClockSkewSeconds": 30,
+  "RequireKnownRole": true
+}
+```
+
+The signing key is **not** in `appsettings.json`. Supply it as `Jwt__SigningKey` (or
+`Jwt:SigningKey`) from a secret store. Two things happen if you do not:
+
+- **The process refuses to start**, with a message naming the missing settings. A deployment that
+  comes up healthy while accepting unsigned tokens is worse than one that is plainly down.
+- **A key shorter than 32 bytes is also refused.** HMAC-SHA256 does not fail on a short key, it
+  quietly makes forged signatures cheaper — the failure nobody notices until it matters.
+
+### Roles
+
+| Role | May |
+| --- | --- |
+| `Agent` | Read everything. File claims. |
+| `Adjuster` | Everything an agent may, plus create and update policies, adjudicate claims, register policyholders. |
+| `Admin` | Everything, plus cancel a policy. |
+
+Two boundaries are deliberate rather than incidental:
+
+- **An agent may not adjudicate a claim.** The point of an adjuster being a different person is that
+  whoever filed the claim does not also approve it.
+- **Cancelling a policy is admin-only.** It ends cover and may have to be honoured retroactively, so
+  it is a commercial decision, not an operational one.
+
+### 401 versus 403
+
+The two are kept distinct because the remedy is different. **401** means *prove who you are* — obtain
+a token. **403** means *we know who you are and the answer is no*. A client that conflates them
+either gives up or retries forever.
+
+### Token validation
+
+Issuer, audience, lifetime and signature are all validated. A token signed with the right key but
+minted by a different service, or for a different service, is rejected — so a partner that shares the
+key cannot impersonate this API.
+
+A valid signature proves the token was minted here, not that it may do anything. A token carrying a
+role this service has never heard of is refused with **403** rather than authenticating as a
+role-less user, which would otherwise be refused by every policy and read as a permissions bug rather
+than a configuration one.
+
+**The claim types are left at the framework defaults.** Overriding `NameClaimType` to the raw `sub`
+looks tidier and silently breaks: inbound claim mapping renames `sub` on the way in, the identity then
+finds no claim of the configured type, `Identity.Name` comes back null, and every authenticated write
+lands in the audit columns as `system`. A token minted by any standard library works without this
+service publishing a convention that whoever issues tokens has to know about.
+
+### Audit and authorization agree
+
+`ICurrentUser` reads the same token that the authorization policies evaluated, so who was permitted
+and who is recorded in `UpdatedBy` cannot drift apart.
+
+### Tests
+
+`TestTokens` mints **real** signed tokens using the key the host was configured with, and the
+production validation pipeline evaluates them. A stubbed authentication scheme would keep the suite
+green if the signature check, the issuer check, the audience check, the lifetime check or the role
+claim mapping were all wrong — which is every part of this feature that is easy to get wrong.
+
+`AuthorizationTests` covers the whole matrix, plus the token-forgery cases: wrong key, wrong issuer,
+wrong audience, expired, and an unrecognised role.
+
 ## API Versioning
 
 Every controller is tagged `[ApiVersion("1.0")]` and reachable at two URLs:

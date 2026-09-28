@@ -23,7 +23,56 @@ public abstract class ApiIntegrationTestBase : IAsyncLifetime
     /// <summary>
     ///     Gets the client used to talk to the test server.
     /// </summary>
+    /// <remarks>
+    ///     Authenticated with a real admin token. Override <see cref="Factory" /> or use
+    ///     <c>UnauthenticatedClient</c> in the tests that are specifically about authorization.
+    /// </remarks>
     protected HttpClient Client { get; private set; } = null!;
+
+    /// <summary>
+    ///     Gets the factory backing <see cref="Client" />, so a test can adjust how it is built.
+    /// </summary>
+    protected InMemoryApiFactory Factory
+    {
+        get
+        {
+            FactoryCreated?.Invoke(_factory);
+            return _factory;
+        }
+    }
+
+    /// <summary>
+    ///     Runs once, the first time <see cref="Factory" /> is read, so a test can configure the
+    ///     host before the client is created.
+    /// </summary>
+    protected Action<InMemoryApiFactory>? FactoryCreated { get; set; }
+
+    /// <summary>
+    ///     Gets a client with no default authorization header, for tests that supply their own token
+    ///     or deliberately supply none.
+    /// </summary>
+    /// <param name="roles">Roles for the token, or null to send no token at all.</param>
+    /// <param name="subject">The subject the token identifies.</param>
+    /// <returns>A new client the caller owns and should dispose.</returns>
+    protected HttpClient CreateTokenClient(IEnumerable<string>? roles = null, string subject = "test-user")
+    {
+        var client = _factory.CreateClient();
+
+        if (roles is not null)
+        {
+            client.DefaultRequestHeaders.Authorization = new System.Net.Http.Headers.AuthenticationHeaderValue(
+                "Bearer", TestTokens.Mint(subject, roles));
+        }
+
+        return client;
+    }
+
+    /// <summary>
+    ///     Gets a second client that presents no token, for observing a 401.
+    /// </summary>
+    protected HttpClient UnauthenticatedClient => Unauthenticated ??= CreateUnauthenticatedClient();
+
+    private HttpClient? Unauthenticated;
 
     /// <summary>
     ///     Gets the policyholder used by <see cref="SeedHolderAsync" /> when the test does not
@@ -48,7 +97,7 @@ public abstract class ApiIntegrationTestBase : IAsyncLifetime
     public virtual async Task InitializeAsync()
     {
         _factory.ConfigureHost = ConfigureTestHost;
-        Client = _factory.CreateClient();
+        Client = _factory.CreateAuthenticatedClient();
 
         using var scope = _factory.Services.CreateScope();
         var db = scope.ServiceProvider.GetRequiredService<AppDbContext>();
@@ -63,8 +112,14 @@ public abstract class ApiIntegrationTestBase : IAsyncLifetime
     public virtual async Task DisposeAsync()
     {
         Client.Dispose();
+        Unauthenticated?.Dispose();
         await _factory.DisposeAsync();
     }
+
+    /// <summary>
+    ///     Builds a client that presents no bearer token.
+    /// </summary>
+    private HttpClient CreateUnauthenticatedClient() => CreateTokenClient();
 
     /// <summary>
     ///     Reads the identifier out of a 201 response body, which carries the created resource.
