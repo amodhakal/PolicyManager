@@ -6,8 +6,11 @@ using PolicyManager.Services;
 using PolicyManager.Data;
 using PolicyManager.DTOs;
 using PolicyManager.Models;
+<<<<<<< HEAD
 using PolicyManager.Models.Enums;
 using PolicyManager.Services;
+=======
+>>>>>>> efdfa10 (feat: tune the indexes to the queries the app actually issues)
 using PolicyManager.Tests.Infrastructure;
 
 namespace PolicyManager.Tests.Integration;

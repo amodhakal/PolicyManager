@@ -453,6 +453,67 @@ it, so they stayed invisible to every list reader until the entry expired.
 
 ---
 
+## Indexes
+
+Indexes are shaped by the queries the application actually issues, not by which columns happen to
+look filterable. Two rules run through all of it:
+
+- **Every list endpoint appends `Id` to its `ORDER BY` as a tie-breaker**, so a page number always
+  identifies the same rows. A single-column index cannot supply that tie-breaker, so the index has to
+  include it or the engine sorts the candidates before it can page them.
+- **A filtered index is better than a general one whenever a column has a value the queries never
+  read.** Denied claims and delivered outbox messages are the majority of their tables over time and
+  no hot query touches them; excluding them keeps the structure from growing with history.
+
+| Index | Serves |
+| --- | --- |
+| `IX_Policies_PolicyNumber` (unique) | Business-number lookup, and the duplicate-number 409 |
+| `IX_PolicyHolder_Email` (unique) | Duplicate-email 409, and email ordering |
+| `IX_Policies_Status_Id` | The only filter the policies list supports, plus the `Id` tie-breaker |
+| `IX_Policies_PolicyHolderId_Id` | Holder-scoped listing and the `policyHolderId` sort |
+| `IX_PolicyHolders_LastName_Id` | The name ordering holders are actually listed by |
+| `IX_Claims_Coverage` — filtered `[Status] <> 2` | The coverage sum on every claim create |
+| `IX_Claims_FiledAt_Id` | The recency listing, newest first |
+| `IX_OutboxMessages_Pending` — filtered on the two unprocessed predicates | The dispatcher's poll, keyed on the `CreatedAt` it orders by |
+| `IX_OutboxMessages_Claimed` — filtered `[LockToken] IS NOT NULL` | The dispatcher's read-back of the rows it just won |
+
+`IX_Claims_Coverage` is the one that matters most. Every claim is created after summing what its
+policy has already paid out, so it is the hottest read in the system, and `Amount` is in the index so
+the sum needs no row lookups at all.
+
+### What was removed, and why
+
+Four indexes were dropped because a composite or filtered index now serves the same query more
+narrowly, while costing a write on every insert:
+
+- `IX_Policies_Status` and `IX_Policies_PolicyHolderId` — subsumed by the composites. Their
+  declarations were also removed from the model, so EF's foreign-key convention recognises the
+  composite as covering the relationship and does not recreate them.
+- `IX_Claims_PolicyId` — subsumed by `IX_Claims_Coverage`, which leads on the same column.
+- `IX_OutboxMessages_ProcessedAt` — the poll always requires `ProcessedAt IS NULL`, which the
+  filtered index already guarantees, so a general index on the column served nothing.
+
+`IX_OutboxMessages_Pending` was also **re-keyed** from `(ProcessedAt, NextAttemptAt)` to
+`(CreatedAt)`. Within a filtered index `ProcessedAt` is constant, so it contributed no ordering at
+all: the dispatcher asks for `ORDER BY CreatedAt` and the engine had to sort the live rows before it
+could take a batch. The two "due and unclaimed" predicates are deliberately *not* keys — they are
+OR-ed against `NULL`, which is not sargable, so they are applied as a residual filter over the live
+rows instead.
+
+`IX_OutboxMessages_Claimed` is new and fixes a genuine gap: `LockToken` was not indexed at all, so
+every dispatch pass that claimed anything finished by scanning the whole outbox table to collect the
+rows it had just won.
+
+### Migration ordering
+
+`QueryIndexes` creates the replacements before dropping the originals, so a query running while the
+migration is in flight never finds itself with no supporting index.
+
+The filtered predicates are written with the enum's numeric value (`[Status] <> 2`), not its member
+name. Interpolating `ClaimStatus.Denied` produces `[Status] <> Denied`, which SQL Server cannot
+resolve — and the failure surfaces only when the migration runs against a real server, long after the
+mistake. `QueryIndexTests` asserts the predicate literally to keep that mistake from coming back.
+
 ## Business Numbers
 
 Policy and claim numbers are sequential and human-readable rather than GUIDs:

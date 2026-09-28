@@ -1,5 +1,6 @@
 using Microsoft.EntityFrameworkCore;
 using PolicyManager.Models;
+using PolicyManager.Models.Enums;
 using PolicyManager.Services;
 
 namespace PolicyManager.Data;
@@ -140,27 +141,58 @@ public class AppDbContext : DbContext
             .HasIndex(p => p.PolicyNumber)
             .IsUnique();
 
+        // Status is the only filter the policies list supports, and every branch of its ORDER BY
+        // ends in Id. Leading on Status makes the filtered COUNT and the filtered page both seeks
+        // instead of a scan of the whole table; the Id tail means the page's tie-breaker is already
+        // in index order, so no sort is needed to satisfy it.
         modelBuilder.Entity<Policy>()
-            .HasIndex(p => p.Status);
+            .HasIndex(p => new { p.Status, p.Id })
+            .HasDatabaseName("IX_Policies_Status_Id");
 
+        // Same shape for the holder-scoped listing and the policyHolderId sort branch.
         modelBuilder.Entity<Policy>()
-            .HasIndex(p => p.PolicyHolderId);
+            .HasIndex(p => new { p.PolicyHolderId, p.Id })
+            .HasDatabaseName("IX_Policies_PolicyHolderId_Id");
 
+        // Serves both the duplicate-email check on insert and the email ordering.
         modelBuilder.Entity<PolicyHolder>()
             .HasIndex(p => p.Email)
             .IsUnique();
 
+        // Replaces a plain (LastName) index, which could not supply the Id tie-breaker the list
+        // appends to every ORDER BY and so had to sort the candidate rows before paging them.
+        modelBuilder.Entity<PolicyHolder>()
+            .HasIndex(p => new { p.LastName, p.Id })
+            .HasDatabaseName("IX_PolicyHolders_LastName_Id");
+
+        // Replaces a plain (PolicyId) index. Every claim query by policy — the coverage sum below
+        // and any per-policy listing — also constrains Status, and Amount has to come back for the
+        // sum, so all three are keys rather than the PolicyId alone.
+        //
+        // Filtered to the statuses that still reserve coverage. Denied claims are excluded from the
+        // index entirely: the sum never reads them, and they only accumulate, so keeping them would
+        // grow the structure without ever serving a query. The predicate is written with the numeric
+        // value, not the enum member name — SQL has no idea what "Denied" is.
         modelBuilder.Entity<Claim>()
-            .HasIndex(c => c.PolicyId);
+            .HasIndex(c => new { c.PolicyId, c.Amount })
+            .HasFilter($"[Status] <> {(int)ClaimStatus.Denied}")
+            .HasDatabaseName("IX_Claims_Coverage");
 
-        modelBuilder.Entity<OutboxMessage>()
-            .HasIndex(o => o.ProcessedAt);
+        // Replaces a plain (PolicyId) index for the same reason as IX_Claims_Coverage, but for the
+        // recency listing an adjuster actually runs: ordered claims, newest first.
+        modelBuilder.Entity<Claim>()
+            .HasIndex(c => new { c.FiledAt, c.Id })
+            .HasDatabaseName("IX_Claims_FiledAt_Id");
 
-        // Serves the dispatcher's poll predicate: live, undelivered rows that are due and unclaimed.
-        // A filtered index keeps processed and dead-lettered rows out of the index entirely, so the
-        // structure stays small no matter how much history the table accumulates.
+        // The dispatcher's poll. Keyed on CreatedAt because that is the ORDER BY, so the batch is a
+        // forward walk of the live rows and the engine can stop as soon as it has enough. A filtered
+        // index keeps processed and dead-lettered rows out entirely, so the structure stays small
+        // however much history the table accumulates.
+        //
+        // The two "due and unclaimed" predicates cannot be keys: they are OR-ed against NULL, which
+        // is not sargable, so they are applied as a residual filter over the live rows instead.
         modelBuilder.Entity<OutboxMessage>()
-            .HasIndex(o => new { o.ProcessedAt, o.NextAttemptAt })
+            .HasIndex(o => o.CreatedAt)
             .HasFilter("[ProcessedAt] IS NULL AND [DeadLetteredAt] IS NULL")
             .HasDatabaseName("IX_OutboxMessages_Pending");
 
@@ -173,6 +205,15 @@ public class AppDbContext : DbContext
 // why. Retirement of a holder or a policy is a status change (a policy is cancelled, not deleted);
 // this only removes the silent destruction of financial records.
 modelBuilder.Entity<Policy>()
+        // The dispatcher's second read: the rows this instance just won the claim on. Nothing
+        // indexed LockToken, so every batch that claimed anything finished with a full table scan to
+        // collect them. Rarely true and almost always unique, so a filtered index is both smaller
+        // and cheaper than a general one.
+        modelBuilder.Entity<OutboxMessage>()
+            .HasIndex(o => o.LockedUntil)
+            .HasFilter("[LockToken] IS NOT NULL")
+            .HasDatabaseName("IX_OutboxMessages_Claimed");
+
         // Configured per CLR type rather than through the interface: IsRowVersion is provider
         // specific (a SQL Server rowversion column), so it has to be applied to each mapped entity
         // the provider will recognise it on.
