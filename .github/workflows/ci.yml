@@ -18,12 +18,34 @@ jobs:
         uses: actions/setup-dotnet@v4
         with:
           dotnet-version: 9.0.x
+          cache: true
+          # No packages.lock.json is committed (neither csproj sets
+          # RestorePackagesWithLockFile), so setup-dotnet keys the NuGet cache
+          # off the project manifests instead. Both are listed explicitly so a
+          # future project outside these paths cannot silently miss the key.
+          cache-dependency-path: |
+            PolicyManager/PolicyManager.csproj
+            PolicyManager.Tests/PolicyManager.Tests.csproj
 
       - name: Restore
         run: dotnet restore
 
+      # Analyzers are enforced narrowly. PolicyManager.csproj sets
+      # GenerateDocumentationFile=true and Swashbuckle consumes the XML, so the
+      # project still emits real CS1591 (undocumented `public partial class
+      # Program` in Program.cs) and CS1573 (IClaimsService/PoliciesService
+      # document `id`/`dto` but not `cancellationToken`). Blanket
+      # TreatWarningsAsErrors would therefore turn the build red, so only a
+      # curated, defect-class list of rules is escalated. These properties are
+      # workflow-scoped on purpose; moving them into a csproj is the follow-up.
       - name: Build
-        run: dotnet build --no-restore --configuration Release
+        run: |
+          dotnet build --no-restore --configuration Release \
+            -p:EnableNETAnalyzers=true \
+            -p:AnalysisLevel=latest \
+            -p:AnalysisMode=Default \
+            -p:TreatWarningsAsErrors=false \
+            -p:WarningsAsErrors="CS0105%3BCS0108%3BCS0114%3BCS0162%3BCS0164%3BCS8625%3BCA1416"
 
       - name: Test with coverage
         run: |
@@ -38,3 +60,31 @@ jobs:
           files: ./coverage/**/coverage.cobertura.xml
           token: ${{ secrets.CODECOV_TOKEN }}
           fail_ci_if_error: false
+
+  # No `needs:` on purpose. This job is deliberately independent of
+  # build-and-test so a Dockerfile regression surfaces as its own failure, and so
+  # a red unit-test suite neither blocks nor masks the image build.
+  docker-build:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      # Build-only: push and load are both false, so BuildKit discards the
+      # result and no registry credentials are involved. The container is never
+      # started, so this needs no SQL Server. context/file mirror compose.yaml.
+      # No `platforms:` is set because ubuntu-latest is native Linux and
+      # DockerDefaultTargetOS=Linux, so the default build platform already
+      # matches the Linux base images.
+      - name: Build image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: PolicyManager/Dockerfile
+          push: false
+          load: false
+          tags: policymanager:ci

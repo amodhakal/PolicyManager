@@ -7,7 +7,7 @@ namespace PolicyManager.Data;
 ///     Entity Framework DbContext for the Policy Manager application.
 /// </summary>
 /// <remarks>
-///     Manages database connections and entity mappings for PolicyHolder, Policy, and Claim entities.
+///     Manages database connections and entity mappings for PolicyHolder, Policy, Claim, and OutboxMessage entities.
 ///     Configures relationships, indexes, and cascade delete behaviors.
 /// </remarks>
 public class AppDbContext(DbContextOptions<AppDbContext> options) : DbContext(options)
@@ -26,6 +26,11 @@ public class AppDbContext(DbContextOptions<AppDbContext> options) : DbContext(op
     ///     Gets or sets the collection of claims.
     /// </summary>
     public DbSet<Claim> Claims { get; set; }
+
+    /// <summary>
+    ///     Gets or sets the collection of outbox messages for transactional messaging.
+    /// </summary>
+    public DbSet<OutboxMessage> OutboxMessages { get; set; }
 
     /// <summary>
     ///     Configures the entity model and relationships.
@@ -51,6 +56,9 @@ public class AppDbContext(DbContextOptions<AppDbContext> options) : DbContext(op
 
         modelBuilder.Entity<Claim>()
             .HasIndex(c => c.PolicyId);
+
+        modelBuilder.Entity<OutboxMessage>()
+            .HasIndex(o => o.ProcessedAt);
 
         modelBuilder.Entity<Policy>()
             .HasOne(p => p.PolicyHolder)
