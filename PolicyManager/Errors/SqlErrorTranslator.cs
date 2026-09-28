@@ -1,3 +1,4 @@
+using System.Text.RegularExpressions;
 using Microsoft.Data.SqlClient;
 
 namespace PolicyManager.Errors;
@@ -13,6 +14,13 @@ namespace PolicyManager.Errors;
 /// </remarks>
 public static class SqlErrorTranslator
 {
+    /// <summary>
+    ///     Matches the constraint name inside a SQL Server error message, which is quoted with either
+    ///     single or double quotes depending on the kind of violation.
+    /// </summary>
+    private static readonly Regex ConstraintNamePattern =
+        new("constraint\s+['\"](?<name>[^'\"]+)['\"]", RegexOptions.IgnoreCase | RegexOptions.Compiled);
+
     /// <summary>
     ///     A unique index or unique constraint was violated.
     /// </summary>
@@ -84,8 +92,15 @@ public static class SqlErrorTranslator
     }
 
     /// <summary>
-    ///     Reads the constraint name out of a SQL Server error message, when the server reported one.
+    ///     Reads the constraint name out of a SQL Server error, when the server reported one.
     /// </summary>
+    /// <remarks>
+    ///     The name is parsed out of the error text rather than read from a strongly typed member.
+    ///     SQL Server reports it in the message and quotes it with either single or double quotes
+    ///     depending on the error: a unique violation says <c>Violation of UNIQUE KEY constraint
+    ///     'IX_PolicyHolders_Email'</c>, while a foreign key violation says <c>conflicted with the
+    ///     FOREIGN KEY constraint "FK_Claims_Policies_PolicyId"</c>.
+    /// </remarks>
     /// <param name="exception">The exception to inspect.</param>
     /// <returns>A constraint or index name, or null when none could be read.</returns>
     public static string? GetConstraintName(Exception exception)
@@ -95,9 +110,12 @@ public static class SqlErrorTranslator
             if (current is not SqlException sqlException) continue;
 
             foreach (SqlError error in sqlException.Errors)
-                if (!string.IsNullOrWhiteSpace(error.ConstraintName)) return error.ConstraintName;
+            {
+                var match = ConstraintNamePattern.Match(error.Message);
+                if (match.Success) return match.Groups[1].Value;
+            }
 
-            break;
+            return null;
         }
 
         return null;
