@@ -85,7 +85,8 @@ public class ClaimsController(IClaimsService claimsService)
     [HttpPatch("{id:int}/status")]
     public async Task<ActionResult> UpdateStatus(int id, UpdateClaimStatusDto dto, CancellationToken cancellationToken)
     {
-        await claimsService.UpdateStatus(id, dto, dto.DecidedBy, dto.Notes, cancellationToken);
+        await claimsService.UpdateStatus(
+            id, dto, dto.DecidedBy, dto.Notes, dto.RowVersion, cancellationToken);
         return Ok();
     }
 }

@@ -56,4 +56,24 @@ public class ClaimDto
     ///     Notes recorded by the adjuster, or null when none were recorded.
     /// </summary>
     public string? AdjusterNotes { get; set; }
+
+    /// <summary>
+    ///     When the record was last modified, or null while it has never been modified.
+    /// </summary>
+    public DateTime? UpdatedAt { get; set; }
+
+    /// <summary>
+    ///     Who last modified the record, or null while it has never been modified.
+    /// </summary>
+    public string? UpdatedBy { get; set; }
+
+    /// <summary>
+    ///     The record's concurrency token, as base64. Send it back on an update to make the write
+    ///     conditional on nothing having changed since the record was read.
+    /// </summary>
+    /// <remarks>
+    ///     Opaque and server-generated. A mismatch is reported as <c>409 Conflict</c> rather than
+    ///     silently overwriting the other writer's change.
+    /// </remarks>
+    public string? RowVersion { get; set; }
 }

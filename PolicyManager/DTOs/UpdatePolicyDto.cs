@@ -27,6 +27,15 @@ public class UpdatePolicyDto : IValidatableObject
     public PolicyStatus? Status { get; set; }
 
     /// <summary>
+    ///     The <c>rowVersion</c> read from this policy, or null to write unconditionally.
+    /// </summary>
+    /// <remarks>
+    ///     Does not count towards the "at least one change" rule: a token on its own is not a
+    ///     change, and accepting it alone would report a no-op back to the caller as success.
+    /// </remarks>
+    public string? RowVersion { get; set; }
+
+    /// <summary>
     ///     Validates that the request asks for at least one change.
     /// </summary>
     /// <param name="validationContext">The context of the validation being performed.</param>

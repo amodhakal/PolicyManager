@@ -5,7 +5,7 @@ namespace PolicyManager.Models;
 /// <summary>
 ///     Represents a policyholder who owns insurance policies.
 /// </summary>
-public class PolicyHolder
+public class PolicyHolder : IAuditableEntity
 {
     /// <summary>
     ///     The unique identifier of the policyholder.
@@ -34,12 +34,25 @@ public class PolicyHolder
     public string Email { get; set; } = string.Empty;
 
     /// <summary>
-    ///     The date and time when the policyholder was created.
-    /// </summary>
-    public DateTime CreatedAt { get; set; } = DateTime.UtcNow;
-
-    /// <summary>
     ///     The collection of policies owned by this policyholder.
     /// </summary>
     public ICollection<Policy> Policies { get; set; } = new List<Policy>();
+
+    /// <inheritdoc />
+    [Required]
+    public DateTime CreatedAt { get; set; }
+
+    /// <inheritdoc />
+    [MaxLength(100)]
+    public string? CreatedBy { get; set; }
+
+    /// <inheritdoc />
+    public DateTime? UpdatedAt { get; set; }
+
+    /// <inheritdoc />
+    [MaxLength(100)]
+    public string? UpdatedBy { get; set; }
+
+    /// <inheritdoc />
+    public byte[] RowVersion { get; set; } = [];
 }

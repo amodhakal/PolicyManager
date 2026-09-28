@@ -45,11 +45,17 @@ public interface IClaimsService
     /// <param name="dto">The claim status update data transfer object containing the new status.</param>
     /// <param name="decidedBy">The identifier of the adjuster making the decision.</param>
     /// <param name="adjusterNotes">The adjuster's notes.</param>
+    /// <param name="rowVersion">
+    ///     The concurrency token the caller read, or null to decide unconditionally. Adjudication is
+    ///     the step most likely to be attempted twice at once, so without it the second decision
+    ///     quietly replaces the first.
+    /// </param>
     /// <param name="cancellationToken">Token used to cancel the operation.</param>
     public Task UpdateStatus(
         int id,
         UpdateClaimStatusDto dto,
         string? decidedBy = null,
         string? adjusterNotes = null,
+        string? rowVersion = null,
         CancellationToken cancellationToken = default);
 }
