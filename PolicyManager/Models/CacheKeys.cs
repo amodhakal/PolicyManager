@@ -12,13 +12,6 @@ public static class CacheKeys
     public const string AllPolicyHolders = "policyholders:all";
 
     /// <summary>
-    ///     Prevents instantiation of the <see cref="CacheKeys" /> container class.
-    /// </summary>
-    private CacheKeys()
-    {
-    }
-
-    /// <summary>
     ///     Builds the cache key for a single policyholder identified by its unique identifier.
     /// </summary>
     /// <param name="id">The policyholder identifier used to build the key.</param>
