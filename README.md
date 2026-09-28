@@ -453,6 +453,95 @@ it, so they stayed invisible to every list reader until the entry expired.
 
 ---
 
+## Rate Limiting and Request Size Limits
+
+Both are configured under `RateLimiting` in `appsettings.json` and can be overridden per environment
+without a rebuild — the right quota for a staging load test is rarely the right one in production.
+
+```json
+"RateLimiting": {
+  "Enabled": true,
+  "PermitLimit": 100,
+  "Window": "00:01:00",
+  "Cooldown": "00:00:10",
+  "QueueLimit": 20,
+  "MaxRequestBodySizeBytes": 65536,
+  "RejectionStatusCode": 429
+}
+```
+
+### What a caller is limited against
+
+The correlation ID, falling back to the remote address. A limit keyed on the address punishes everyone
+behind a shared egress — a corporate NAT, a mobile carrier, a CI runner — for one caller's
+misbehaviour, and gives an attacker a single address to rotate. The correlation ID is already echoed
+on every response and is already sanitised to log-safe characters.
+
+It is **not** an authenticated identity. A caller can mint a fresh correlation ID per request and get
+a fresh quota, which is why the address stays as the fallback: the limiter degrades to per-connection
+rather than to per-nobody. Keying on the authenticated subject is the obvious next step and is a
+one-line change in `RateLimiting.PartitionKey`.
+
+### Rejection
+
+A caller over quota gets **429** with `Retry-After` set to the cooldown. A bare 429 tells a client
+only that it was too fast, not for how long to slow down, so it either retries immediately — turning a
+burst into sustained load — or gives up.
+
+The cooldown is clamped to the window, so a caller that waits exactly as long as `Retry-After` says is
+always let through. A 429 is deliberately **not** a ProblemDetails body: it is a statement about the
+caller's pacing, not a failure of this request.
+
+`QueueLimit` is non-zero so a brief burst is smoothed rather than rejected, and queued callers still
+get a 429 once the queue fills, so a genuine flood is still shed — just not punished for arriving a
+few hundred milliseconds early.
+
+### Request size
+
+Two limits, on purpose:
+
+- **Kestrel's `MaxRequestBodySize`** is the real defence. It stops reading while the payload is still
+  arriving, so the bytes never accumulate in memory.
+- **`RequestSizeLimitMiddleware`** runs in front of it to turn the same condition into the same
+  RFC 9457 ProblemDetails, carrying the correlation ID, rather than Kestrel's bare connection reset.
+  It also runs identically under `TestServer`, where no Kestrel limit applies and the behaviour would
+  otherwise be untestable.
+
+The middleware checks `Content-Length`, so it is a fast rejection rather than a defence: a chunked
+request that declares no length passes it and is caught by the server limit. That division is
+deliberate — measuring a stream to discover it is too long means reading all of it, which is the
+thing being prevented.
+
+64 KiB is generous by two orders of magnitude: the largest payload any endpoint here can legitimately
+produce is a claim description, and that is capped at 1000 characters.
+
+### Pipeline position
+
+```csharp
+app.UseMiddleware<CorrelationIdMiddleware>();   // supplies the partition key
+app.UseMiddleware<RequestSizeLimitMiddleware>();
+app.UseExceptionHandler();
+app.UseHttpsRedirection();
+app.UseRouting();                               // so per-endpoint overrides are honoured
+app.UseRateLimiter();                           // before authentication
+app.UseAuthorization();
+```
+
+`UseRateLimiter` sits **before** `UseAuthorization` on purpose. A JWT is a signed blob that costs
+real CPU to check; verifying one per rejected request would let an unauthenticated caller spend the
+very CPU the limiter exists to protect.
+
+When `Enabled` is false the middleware still runs, with a no-op limiter, so the pipeline shape and
+these ordering constraints hold identically whether or not the feature is on.
+
+### A note on reading the configuration
+
+The runtime limits are read from `IOptions<RateLimitOptions>` through the request's own services, not
+captured into a closure at startup. `IOptions<T>` resolves its section lazily against the *finished*
+configuration, so a source added after `Program.cs` read the section still applies. Reading eagerly
+instead silently applies the built-in defaults and the limit appears to do nothing at all — which is
+how this was found.
+
 ## Indexes
 
 Indexes are shaped by the queries the application actually issues, not by which columns happen to

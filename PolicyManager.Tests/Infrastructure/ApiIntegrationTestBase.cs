@@ -1,5 +1,6 @@
 using System.Net;
 using System.Net.Http.Json;
+using Microsoft.AspNetCore.Hosting;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.DependencyInjection;
 using PolicyManager.Data;
@@ -32,10 +33,21 @@ public abstract class ApiIntegrationTestBase : IAsyncLifetime
         new() { FirstName = "Jane", LastName = "Doe", Email = "jd@gmail.com" };
 
     /// <summary>
+    ///     Adjusts the test host before the client is built. Override to override configuration or
+    ///     replace a service for one test class; the database swap is already applied and runs
+    ///     before this.
+    /// </summary>
+    /// <param name="builder">The web host builder for the test server.</param>
+    protected virtual void ConfigureTestHost(IWebHostBuilder builder)
+    {
+    }
+
+    /// <summary>
     ///     Creates the client and resets the in-memory database for the test.
     /// </summary>
     public virtual async Task InitializeAsync()
     {
+        _factory.ConfigureHost = ConfigureTestHost;
         Client = _factory.CreateClient();
 
         using var scope = _factory.Services.CreateScope();

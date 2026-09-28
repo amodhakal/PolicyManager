@@ -65,6 +65,26 @@ builder.Services.AddHealthChecks()
 
 builder.Services.Configure<OutboxOptions>(builder.Configuration.GetSection(OutboxOptions.SectionName));
 
+builder.Services.Configure<RateLimitOptions>(builder.Configuration.GetSection(RateLimitOptions.SectionName));
+
+// The Kestrel limit is deployment configuration and is read here, eagerly, because Kestrel options
+// are frozen once the host is built. The runtime limits are not: they are read per request, so a
+// configuration source added after this point still applies.
+var rateLimits = builder.Configuration.GetSection(RateLimitOptions.SectionName).Get<RateLimitOptions>()
+                 ?? new RateLimitOptions();
+
+// The server-side body limit. This is the one that matters: Kestrel refuses to read the rest of an
+// oversized upload, so the bytes never accumulate. RequestSizeLimitMiddleware sits in front of it to
+// turn the same condition into a ProblemDetails response and to make the behaviour observable under
+// TestServer.
+if (rateLimits.MaxRequestBodySizeBytes > 0)
+{
+    builder.WebHost.ConfigureKestrel(kestrel =>
+        kestrel.Limits.MaxRequestBodySize = rateLimits.MaxRequestBodySizeBytes);
+}
+
+builder.Services.AddApiRateLimiting();
+
 
 // The write generation is process-wide state, not per request: it has to be shared by the reader
 // and the writer that race each other, and those are always different requests. Scoping it would
@@ -99,11 +119,27 @@ if (app.Environment.IsDevelopment())
 
 app.UseMiddleware<CorrelationIdMiddleware>();
 
+// Ahead of everything that can fail, and ahead of the exception handler's own write path, so an
+// oversized body is refused before any model binding or handler work begins.
+app.UseMiddleware<RequestSizeLimitMiddleware>();
+
 // Must precede the exception handler so the correlation ID is already in scope when a failure is
 // classified, and precede the rest of the pipeline so it covers everything downstream.
 app.UseExceptionHandler();
 
 app.UseHttpsRedirection();
+
+// Explicit rather than left to the implicit insertion WebApplication performs at the head of the
+// pipeline, so the position of routing relative to the middleware below is stated rather than
+// inferred.
+app.UseRouting();
+
+// After UseRouting, so a per-endpoint [EnableRateLimiting]/[DisableRateLimiting] override is
+// honoured, and after CorrelationIdMiddleware, because the partition key is read from the item it
+// stores. Ahead of authentication so a flood is shed before any token is validated — a JWT is a
+// signed blob that costs real CPU to check, and verifying one per rejected request would let an
+// unauthenticated caller spend the very CPU the limiter exists to protect.
+app.UseRateLimiter();
 app.UseAuthorization();
 
 app.MapControllers();
