@@ -34,4 +34,27 @@ public interface IPolicyHoldersService
     /// <param name="cancellationToken">Token used to cancel the operation.</param>
     /// <returns>The unique identifier of the newly created policy holder.</returns>
     public Task<int> Create(CreatePolicyHolderDto dto, CancellationToken cancellationToken = default);
+
+    /// <summary>
+    ///     Updates an existing policy holder, applying only the fields that were supplied.
+    /// </summary>
+    /// <remarks>
+    ///     A field left null is not written, so a caller changing only the last name does not blank
+    ///     the first name and the email address.
+    /// </remarks>
+    /// <exception cref="Exceptions.NotFoundException">The policy holder does not exist.</exception>
+    /// <exception cref="Exceptions.ConflictException">Another policy holder already holds the supplied email.</exception>
+    /// <param name="id">The policy holder identifier.</param>
+    /// <param name="dto">The policy holder fields to change.</param>
+    /// <param name="cancellationToken">Token used to cancel the operation.</param>
+    public Task Update(int id, UpdatePolicyHolderDto dto, CancellationToken cancellationToken = default);
+
+    /// <summary>
+    ///     Deletes a policy holder who owns no policies.
+    /// </summary>
+    /// <exception cref="Exceptions.NotFoundException">The policy holder does not exist.</exception>
+    /// <exception cref="Exceptions.ConflictException">The policy holder still owns policies.</exception>
+    /// <param name="id">The policy holder identifier.</param>
+    /// <param name="cancellationToken">Token used to cancel the operation.</param>
+    public Task Delete(int id, CancellationToken cancellationToken = default);
 }
