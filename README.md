@@ -453,6 +453,444 @@ it, so they stayed invisible to every list reader until the entry expired.
 
 ---
 
+## Protecting Personal Data
+
+Policyholder email addresses are the only personal data this service holds. They get three
+protections, because any one of them alone leaves the obvious gap.
+
+```json
+"Pii": {
+  "AuditAccess": true,
+  "BackfillOnStartup": true
+}
+```
+
+The keys are **not** in `appsettings.json`. Supply `Pii__EncryptionKey` (base64, exactly 32 bytes for
+AES-256 — `openssl rand -base64 32`) and `Pii__BlindIndexKey` (at least 32 bytes) from a secret
+store. The process **refuses to start** if either is missing or too short. A short AES key is not
+padded up to strength; accepting one would mean believing the data is protected when it is not.
+
+### Encryption at rest
+
+`Email` is stored as AES-256-GCM ciphertext through an EF value converter, so nothing above the
+persistence layer knows the value is encrypted. GCM is *authenticated*: a tampered row fails to
+decrypt rather than returning corrupted personal data, and `PiiProtectionTests` asserts that by
+flipping a bit.
+
+Ciphertext is **randomised** — a fresh nonce per write — so two holders with the same address do not
+produce the same bytes. That is also why the address column cannot be indexed at all, and why
+`QueryIndexTests` asserts that it is not.
+
+### The blind index
+
+A randomised column cannot be compared, so the unique constraint on the address has to move to
+something deterministic. `EmailHash` is an **HMAC-SHA256** of the normalised address, keyed with a
+key the database never sees.
+
+HMAC rather than a plain hash: an unkeyed hash of an email address is trivially reversible by brute
+force, because addresses are low-entropy and a wordlist of them is easy to obtain. That would put
+every address back in the clear in a column that looks harmless. HMAC makes the index safe to store
+beside the ciphertext it protects.
+
+The index is stamped in `AppDbContext.SaveChanges`, **not** by a value converter. A converter applies
+to both sides of a comparison, so a query for `EmailHash == x` would search for the hash *of* `x` and
+find nothing — silently disabling the duplicate-address check. Stamping on save is also what makes it
+correct on every write path, including ones that do not go through a service.
+
+### Access control
+
+| | Sees the address |
+| --- | --- |
+| `Admin`, `Adjuster` | In the clear |
+| `Agent` | Masked: `j***@***.com` |
+| Unauthenticated | 403 — no token at all |
+
+Authorization already stops anonymous callers; what it does not do is narrow *reads*. An agent who
+files a claim on someone's behalf has no need for their address, and returning it anyway means a
+compromised agent account discloses contact details for the whole book. An adjuster contacts holders
+about claims, so they keep the address.
+
+The mask keeps the first character of the local part and the domain's public suffix, because a mask
+nobody can recognise is useless in a support conversation and gets read out over the telephone anyway.
+Everything that identifies a person is gone, and the length does not reveal the original.
+
+**The mask is applied per response, never to the cached value.** The single-holder cache entry is
+shared, so masking the cached copy would serve a disclosed address to an agent who is only entitled
+to the masked form.
+
+### Audit trail
+
+`PiiAccessAudits` records every read of a holder: who, with which roles, when, from which path, under
+which correlation ID, and **whether the address was disclosed or masked**. "Read the record" and
+"read the contact details" are different acts, and a disclosure review needs to know which happened.
+
+The row is written in the request's own context, so it commits with the read that caused it. Writing it
+afterwards would leave a window where a successful disclosure had no record at all — which is exactly
+the window an auditor would ask about.
+
+The log **never copies the data it audits**. An access log containing the personal data is one more
+store to redact rather than a control.
+
+For the same reason the address is **absent from the `PolicyHolderCreated` outbox message**. An outbox
+message is a broadcast to whatever consumes it, and its retention is not this service's to bound;
+publishing the address there would copy personal data out of the one store that protects it.
+Consumers that need it read the holder, which is access-controlled and audited. The message carries
+`HasEmail` instead.
+
+### Rolling this out: two phases, deliberately
+
+The data cannot be converted in T-SQL. AES-GCM has no SQL Server equivalent, and the blind index is an
+HMAC precisely because a plain hash would be reversible. So the rows have to be read and written by
+the application, and the constraint has to wait for them.
+
+**Phase 1** — `PiiProtection` migration. Adds `EmailHash` as **nullable**, widens `Email`, and creates
+the audit table. Everything is additive and the old index is left alone, so this migration on its own
+still behaves. `PiiBackfillService` runs on start-up and converts rows with no blind index, in
+committed batches so progress is durable and the table stays usable throughout. It is idempotent and
+resumable, and a converted table makes its first pass return nothing.
+
+The duplicate-address **409 is preserved in the meantime** by an explicit check in
+`PolicyHoldersService.Create` against the blind index. Without it the guarantee would silently vanish
+for the length of the rollout.
+
+**Phase 2** — applied by hand, once the logs say the backfill is complete:
+
+```bash
+dotnet ef database update PiiProtection
+# watch for: "The PII backfill is complete after N passes."
+dotnet ef database update EnforcePiiBlindIndex
+```
+
+`EnforcePiiBlindIndex` makes the column `NOT NULL` and the index unique. It `THROW`s if any row
+still has no index, because an address left in plaintext with a NULL index is precisely the state this
+feature exists to end, and quietly skipping those rows would leave them there permanently.
+
+Applying it early either fails outright or succeeds over rows whose index was computed under a key
+about to change — and the database cannot tell the difference, which is why the ordering is a
+documented operator step rather than something the migration chain can enforce.
+
+## Authentication and Authorization
+
+Every endpoint requires a bearer token. There is no anonymous read access: a leaked identifier is
+still a disclosure, and a policyholder's email address is personal data.
+
+```http
+Authorization: Bearer <jwt>
+```
+
+### Configuration
+
+```json
+"Jwt": {
+  "Issuer": "policy-manager",
+  "Audience": "policy-manager-api",
+  "ClockSkewSeconds": 30,
+  "RequireKnownRole": true
+}
+```
+
+The signing key is **not** in `appsettings.json`. Supply it as `Jwt__SigningKey` (or
+`Jwt:SigningKey`) from a secret store. Two things happen if you do not:
+
+- **The process refuses to start**, with a message naming the missing settings. A deployment that
+  comes up healthy while accepting unsigned tokens is worse than one that is plainly down.
+- **A key shorter than 32 bytes is also refused.** HMAC-SHA256 does not fail on a short key, it
+  quietly makes forged signatures cheaper — the failure nobody notices until it matters.
+
+### Roles
+
+| Role | May |
+| --- | --- |
+| `Agent` | Read everything. File claims. |
+| `Adjuster` | Everything an agent may, plus create and update policies, adjudicate claims, register policyholders. |
+| `Admin` | Everything, plus cancel a policy. |
+
+Two boundaries are deliberate rather than incidental:
+
+- **An agent may not adjudicate a claim.** The point of an adjuster being a different person is that
+  whoever filed the claim does not also approve it.
+- **Cancelling a policy is admin-only.** It ends cover and may have to be honoured retroactively, so
+  it is a commercial decision, not an operational one.
+
+### 401 versus 403
+
+The two are kept distinct because the remedy is different. **401** means *prove who you are* — obtain
+a token. **403** means *we know who you are and the answer is no*. A client that conflates them
+either gives up or retries forever.
+
+### Token validation
+
+Issuer, audience, lifetime and signature are all validated. A token signed with the right key but
+minted by a different service, or for a different service, is rejected — so a partner that shares the
+key cannot impersonate this API.
+
+A valid signature proves the token was minted here, not that it may do anything. A token carrying a
+role this service has never heard of is refused with **403** rather than authenticating as a
+role-less user, which would otherwise be refused by every policy and read as a permissions bug rather
+than a configuration one.
+
+**The claim types are left at the framework defaults.** Overriding `NameClaimType` to the raw `sub`
+looks tidier and silently breaks: inbound claim mapping renames `sub` on the way in, the identity then
+finds no claim of the configured type, `Identity.Name` comes back null, and every authenticated write
+lands in the audit columns as `system`. A token minted by any standard library works without this
+service publishing a convention that whoever issues tokens has to know about.
+
+### Audit and authorization agree
+
+`ICurrentUser` reads the same token that the authorization policies evaluated, so who was permitted
+and who is recorded in `UpdatedBy` cannot drift apart.
+
+### Tests
+
+`TestTokens` mints **real** signed tokens using the key the host was configured with, and the
+production validation pipeline evaluates them. A stubbed authentication scheme would keep the suite
+green if the signature check, the issuer check, the audience check, the lifetime check or the role
+claim mapping were all wrong — which is every part of this feature that is easy to get wrong.
+
+`AuthorizationTests` covers the whole matrix, plus the token-forgery cases: wrong key, wrong issuer,
+wrong audience, expired, and an unrecognised role.
+
+## API Versioning
+
+Every controller is tagged `[ApiVersion("1.0")]` and reachable at two URLs:
+
+```
+/api/policies             ← unversioned, means 1.0
+/api/v1.0/policies        ← explicitly versioned
+/api/policies?api-version=1.0
+```
+
+### The unversioned route is kept, not replaced
+
+This is the important part. The versioned template is *added alongside* the existing route rather
+than substituted for it, and `AssumeDefaultVersionWhenUnspecified` makes a request with no version
+resolve to 1.0. A client that never sends a version keeps working, unchanged — introducing a version
+is not a breaking change. Replacing `/api/policies` with `/api/v1/policies` would have been a
+breaking change dressed up as a version introduction.
+
+### Discovery
+
+`ReportApiVersions` puts `api-supported-versions: 1.0` on every response, so a client learns what a
+deployment supports from a single call rather than from documentation it has to trust to be current.
+
+Swagger is one document per version (`/swagger/v1.0/swagger.json`), so a diff between two of them is
+exactly the surface change in that version and nothing else.
+
+### Rejecting a version that does not exist
+
+| Request | Status | Why |
+| --- | --- | --- |
+| `/api/v2.0/policies` | **404** | The version segment is part of the route. No version declares it, so no route matches, and the request is indistinguishable from a path that does not exist. |
+| `/api/policies?api-version=2.0` | **400** | The route matched. The resource was found and the only fault is the parameter. |
+| `/api/policies?api-version=2.0` when 1.0 is the only version | **400** | Never silently downgraded. Serving 1.0 to a caller that asked for 2.0 would hand it a contract it is not expecting with no way to tell. |
+
+### Adding a version
+
+1. Add the constant to `ApiVersions`.
+2. Add a second `[ApiVersion]` attribute to the controllers that support it, and a `SwaggerDoc` for
+   it in `Program.cs`.
+3. Add a second route template with a distinct prefix, or a distinct controller — do not change the
+   meaning of the 1.0 template.
+
+`ApiVersioningTests` asserts that every controller declares a version, because a controller that
+forgets is not a compile error: it is a set of routes that silently stop being reachable through the
+versioned template.
+
+### Known limitation
+
+Controllers are shared across versions, so a v2 that needs a different response shape cannot get one
+without introducing versioned DTOs. That is the right trade at this size — one set of DTOs and one
+set of tests — but it is a constraint, and it is the thing to revisit first when a v2 actually needs
+to differ.
+
+## Rate Limiting and Request Size Limits
+
+Both are configured under `RateLimiting` in `appsettings.json` and can be overridden per environment
+without a rebuild — the right quota for a staging load test is rarely the right one in production.
+
+```json
+"RateLimiting": {
+  "Enabled": true,
+  "PermitLimit": 100,
+  "Window": "00:01:00",
+  "Cooldown": "00:00:10",
+  "QueueLimit": 20,
+  "MaxRequestBodySizeBytes": 65536,
+  "RejectionStatusCode": 429
+}
+```
+
+### What a caller is limited against
+
+The correlation ID, falling back to the remote address. A limit keyed on the address punishes everyone
+behind a shared egress — a corporate NAT, a mobile carrier, a CI runner — for one caller's
+misbehaviour, and gives an attacker a single address to rotate. The correlation ID is already echoed
+on every response and is already sanitised to log-safe characters.
+
+It is **not** an authenticated identity. A caller can mint a fresh correlation ID per request and get
+a fresh quota, which is why the address stays as the fallback: the limiter degrades to per-connection
+rather than to per-nobody. Keying on the authenticated subject is the obvious next step and is a
+one-line change in `RateLimiting.PartitionKey`.
+
+### Rejection
+
+A caller over quota gets **429** with `Retry-After` set to the cooldown. A bare 429 tells a client
+only that it was too fast, not for how long to slow down, so it either retries immediately — turning a
+burst into sustained load — or gives up.
+
+The cooldown is clamped to the window, so a caller that waits exactly as long as `Retry-After` says is
+always let through. A 429 is deliberately **not** a ProblemDetails body: it is a statement about the
+caller's pacing, not a failure of this request.
+
+`QueueLimit` is non-zero so a brief burst is smoothed rather than rejected, and queued callers still
+get a 429 once the queue fills, so a genuine flood is still shed — just not punished for arriving a
+few hundred milliseconds early.
+
+### Request size
+
+Two limits, on purpose:
+
+- **Kestrel's `MaxRequestBodySize`** is the real defence. It stops reading while the payload is still
+  arriving, so the bytes never accumulate in memory.
+- **`RequestSizeLimitMiddleware`** runs in front of it to turn the same condition into the same
+  RFC 9457 ProblemDetails, carrying the correlation ID, rather than Kestrel's bare connection reset.
+  It also runs identically under `TestServer`, where no Kestrel limit applies and the behaviour would
+  otherwise be untestable.
+
+The middleware checks `Content-Length`, so it is a fast rejection rather than a defence: a chunked
+request that declares no length passes it and is caught by the server limit. That division is
+deliberate — measuring a stream to discover it is too long means reading all of it, which is the
+thing being prevented.
+
+64 KiB is generous by two orders of magnitude: the largest payload any endpoint here can legitimately
+produce is a claim description, and that is capped at 1000 characters.
+
+### Pipeline position
+
+```csharp
+app.UseMiddleware<CorrelationIdMiddleware>();   // supplies the partition key
+app.UseMiddleware<RequestSizeLimitMiddleware>();
+app.UseExceptionHandler();
+app.UseHttpsRedirection();
+app.UseRouting();                               // so per-endpoint overrides are honoured
+app.UseRateLimiter();                           // before authentication
+app.UseAuthorization();
+```
+
+`UseRateLimiter` sits **before** `UseAuthorization` on purpose. A JWT is a signed blob that costs
+real CPU to check; verifying one per rejected request would let an unauthenticated caller spend the
+very CPU the limiter exists to protect.
+
+When `Enabled` is false the middleware still runs, with a no-op limiter, so the pipeline shape and
+these ordering constraints hold identically whether or not the feature is on.
+
+### A note on reading the configuration
+
+The runtime limits are read from `IOptions<RateLimitOptions>` through the request's own services, not
+captured into a closure at startup. `IOptions<T>` resolves its section lazily against the *finished*
+configuration, so a source added after `Program.cs` read the section still applies. Reading eagerly
+instead silently applies the built-in defaults and the limit appears to do nothing at all — which is
+how this was found.
+
+## Indexes
+
+Indexes are shaped by the queries the application actually issues, not by which columns happen to
+look filterable. Two rules run through all of it:
+
+- **Every list endpoint appends `Id` to its `ORDER BY` as a tie-breaker**, so a page number always
+  identifies the same rows. A single-column index cannot supply that tie-breaker, so the index has to
+  include it or the engine sorts the candidates before it can page them.
+- **A filtered index is better than a general one whenever a column has a value the queries never
+  read.** Denied claims and delivered outbox messages are the majority of their tables over time and
+  no hot query touches them; excluding them keeps the structure from growing with history.
+
+| Index | Serves |
+| --- | --- |
+| `IX_Policies_PolicyNumber` (unique) | Business-number lookup, and the duplicate-number 409 |
+| `IX_PolicyHolder_Email` (unique) | Duplicate-email 409, and email ordering |
+| `IX_Policies_Status_Id` | The only filter the policies list supports, plus the `Id` tie-breaker |
+| `IX_Policies_PolicyHolderId_Id` | Holder-scoped listing and the `policyHolderId` sort |
+| `IX_PolicyHolders_LastName_Id` | The name ordering holders are actually listed by |
+| `IX_Claims_Coverage` — filtered `[Status] <> 2` | The coverage sum on every claim create |
+| `IX_Claims_FiledAt_Id` | The recency listing, newest first |
+| `IX_OutboxMessages_Pending` — filtered on the two unprocessed predicates | The dispatcher's poll, keyed on the `CreatedAt` it orders by |
+| `IX_OutboxMessages_Claimed` — filtered `[LockToken] IS NOT NULL` | The dispatcher's read-back of the rows it just won |
+
+`IX_Claims_Coverage` is the one that matters most. Every claim is created after summing what its
+policy has already paid out, so it is the hottest read in the system, and `Amount` is in the index so
+the sum needs no row lookups at all.
+
+### What was removed, and why
+
+Four indexes were dropped because a composite or filtered index now serves the same query more
+narrowly, while costing a write on every insert:
+
+- `IX_Policies_Status` and `IX_Policies_PolicyHolderId` — subsumed by the composites. Their
+  declarations were also removed from the model, so EF's foreign-key convention recognises the
+  composite as covering the relationship and does not recreate them.
+- `IX_Claims_PolicyId` — subsumed by `IX_Claims_Coverage`, which leads on the same column.
+- `IX_OutboxMessages_ProcessedAt` — the poll always requires `ProcessedAt IS NULL`, which the
+  filtered index already guarantees, so a general index on the column served nothing.
+
+`IX_OutboxMessages_Pending` was also **re-keyed** from `(ProcessedAt, NextAttemptAt)` to
+`(CreatedAt)`. Within a filtered index `ProcessedAt` is constant, so it contributed no ordering at
+all: the dispatcher asks for `ORDER BY CreatedAt` and the engine had to sort the live rows before it
+could take a batch. The two "due and unclaimed" predicates are deliberately *not* keys — they are
+OR-ed against `NULL`, which is not sargable, so they are applied as a residual filter over the live
+rows instead.
+
+`IX_OutboxMessages_Claimed` is new and fixes a genuine gap: `LockToken` was not indexed at all, so
+every dispatch pass that claimed anything finished by scanning the whole outbox table to collect the
+rows it had just won.
+
+### Migration ordering
+
+`QueryIndexes` creates the replacements before dropping the originals, so a query running while the
+migration is in flight never finds itself with no supporting index.
+
+The filtered predicates are written with the enum's numeric value (`[Status] <> 2`), not its member
+name. Interpolating `ClaimStatus.Denied` produces `[Status] <> Denied`, which SQL Server cannot
+resolve — and the failure surfaces only when the migration runs against a real server, long after the
+mistake. `QueryIndexTests` asserts the predicate literally to keep that mistake from coming back.
+
+## Business Numbers
+
+Policy and claim numbers are sequential and human-readable rather than GUIDs:
+
+```
+POL-2026-000001
+CLM-2026-000042
+```
+
+Nobody can quote a GUID down a telephone, spot a transposition in it, or tell from it which of two
+policies was issued first. The year makes an issue traceable to a period without a lookup, and
+numbering restarts each year so the number stays short enough to read out and write on a form.
+
+### How they are allocated
+
+`BusinessNumberSequence` is a counter row per (kind, year). Allocation is a compare-and-swap on the
+counter's `RowVersion`: read the row, add one, write it with the version that was read. If another
+instance got there first the write matches no rows, raises `DbUpdateConcurrencyException`, and the
+number is retried — contention, not failure, so it is retried rather than surfaced.
+
+Deriving "the highest number issued so far" from the policy rows themselves would need a read
+followed by a write, and two concurrent creates would both read the same maximum and produce the same
+number. The unique index on `PolicyNumber`/`ClaimNumber` would then turn a race into a spurious
+**409**, which is a far worse outcome than the number having a gap in it.
+
+Numbers therefore contain gaps whenever a reservation is not followed by a successful create. That
+is the deliberate trade: a number only has to be unique and increasing within its year, never dense.
+
+The reservation is *not* rolled back with a failed create, and is not part of the outbox transaction
+— it is taken in the request's own unit of work, before the entity insert. It is committed first so
+the number lands in the same write as the row it identifies.
+
+### Migration
+
+`BusinessNumberSequences` creates the counter table. Existing rows keep the GUID numbers they already
+have: the new format applies to policies and claims created from the migration onwards. Rewriting
+existing numbers would break references held by customers and printed on paper, so it is not done.
+
 ## Auditing and Optimistic Concurrency
 
 Every `PolicyHolder`, `Policy` and `Claim` row carries `CreatedAt`, `CreatedBy`, `UpdatedAt`,

@@ -1,4 +1,7 @@
+using Asp.Versioning;
+using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
+using PolicyManager.Configuration;
 using PolicyManager.DTOs;
 using PolicyManager.Services;
 
@@ -13,6 +16,12 @@ namespace PolicyManager.Controllers;
 /// </remarks>
 [ApiController]
 [Route("api/[controller]")]
+// The unversioned route is kept, not replaced. It is what every existing client already calls, and
+// it resolves to 1.0 because the default version is assumed when none is supplied. Replacing it
+// would be a breaking change dressed up as a version introduction.
+[Route("api/v{version:apiVersion}/[controller]")]
+[ApiVersion(ApiVersions.V1)]
+[Authorize(Policy = AuthorizationPolicies.AnyRole)]
 public class ClaimsController(IClaimsService claimsService)
     : ControllerBase
 {
@@ -60,6 +69,7 @@ public class ClaimsController(IClaimsService claimsService)
     /// <response code="201">Claim created successfully.</response>
     /// <response code="404">The referenced policy does not exist.</response>
     /// <response code="422">The policy is not active, or the claim exceeds its remaining coverage.</response>
+    // Filing a claim is the front line's job, so every role may do it.
     [HttpPost]
     public async Task<ActionResult<ClaimDto>> Create(CreateClaimDto dto, CancellationToken cancellationToken)
     {
@@ -82,6 +92,11 @@ public class ClaimsController(IClaimsService claimsService)
     /// <response code="400">The status is missing.</response>
     /// <response code="404">Claim not found.</response>
     /// <response code="422">The transition is not legal from the claim's current status.</response>
+    /// <response code="401">No bearer token was presented.</response>
+    /// <response code="403">The token does not carry a role allowed to adjudicate.</response>
+    // Deciding a claim is not. An agent who files a claim must not be the one who approves it, so
+    // adjudication requires a role that did not create it.
+    [Authorize(Policy = AuthorizationPolicies.AdminOrAdjuster)]
     [HttpPatch("{id:int}/status")]
     public async Task<ActionResult> UpdateStatus(int id, UpdateClaimStatusDto dto, CancellationToken cancellationToken)
     {

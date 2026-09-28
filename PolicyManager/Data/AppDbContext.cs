@@ -1,5 +1,6 @@
 using Microsoft.EntityFrameworkCore;
 using PolicyManager.Models;
+using PolicyManager.Models.Enums;
 using PolicyManager.Services;
 
 namespace PolicyManager.Data;
@@ -74,6 +75,16 @@ public class AppDbContext : DbContext
     /// </summary>
     public DbSet<OutboxMessage> OutboxMessages { get; set; }
 
+    /// <summary>
+    ///     Gets or sets the counters behind the human-readable business numbers.
+    /// </summary>
+    public DbSet<BusinessNumberSequence> BusinessNumberSequences { get; set; }
+
+    /// <summary>
+    ///     Gets or sets the log of reads of personally identifiable information.
+    /// </summary>
+    public DbSet<PiiAccessAudit> PiiAccessAudits { get; set; }
+
     /// <inheritdoc />
     public override int SaveChanges(bool acceptAllChangesOnSuccess)
     {
@@ -111,6 +122,9 @@ public class AppDbContext : DbContext
                 case EntityState.Added:
                     entry.Entity.CreatedAt = now;
                     entry.Entity.CreatedBy = actor;
+
+                    if (entry.Entity is PolicyHolder holder) StampBlindIndex(holder);
+
                     break;
 
                 case EntityState.Modified:
@@ -121,6 +135,24 @@ public class AppDbContext : DbContext
                     break;
             }
         }
+    }
+
+    /// <summary>
+    ///     Fills in the blind index of a policyholder about to be inserted.
+    /// </summary>
+    /// <remarks>
+    ///     Computed here rather than through a value converter, because a converter is applied to
+    ///     both sides of a comparison: a query for <c>EmailHash == x</c> would search for the hash
+    ///     <em>of</em> <c>x</c> and find nothing, which would silently disable the duplicate-address
+    ///     check. Stamping on save is also what makes it correct on every write path, including ones
+    ///     that do not go through a service.
+    /// </remarks>
+    private void StampBlindIndex(PolicyHolder holder)
+    {
+        var cipher = PiiCipher.Current;
+
+        if (cipher is not null)
+            holder.EmailHash = cipher.BlindIndex(holder.Email);
     }
 
     /// <summary>
@@ -135,45 +167,125 @@ public class AppDbContext : DbContext
             .HasIndex(p => p.PolicyNumber)
             .IsUnique();
 
+        // Status is the only filter the policies list supports, and every branch of its ORDER BY
+        // ends in Id. Leading on Status makes the filtered COUNT and the filtered page both seeks
+        // instead of a scan of the whole table; the Id tail means the page's tie-breaker is already
+        // in index order, so no sort is needed to satisfy it.
         modelBuilder.Entity<Policy>()
-            .HasIndex(p => p.Status);
+            .HasIndex(p => new { p.Status, p.Id })
+            .HasDatabaseName("IX_Policies_Status_Id");
 
+        // Same shape for the holder-scoped listing and the policyHolderId sort branch.
         modelBuilder.Entity<Policy>()
-            .HasIndex(p => p.PolicyHolderId);
+            .HasIndex(p => new { p.PolicyHolderId, p.Id })
+            .HasDatabaseName("IX_Policies_PolicyHolderId_Id");
+
+        // The address is stored encrypted, and the ciphertext is randomised, so it cannot be indexed
+        // or compared. The unique constraint therefore runs over the keyed hash, which is
+        // deterministic and safe to store beside it. See PiiCipher for why it is keyed rather than
+        // merely hashed.
+        modelBuilder.Entity<PolicyHolder>()
+            .Property(p => p.Email)
+            .HasConversion(
+                email => PiiCipher.Current!.Encrypt(email),
+                stored => PiiCipher.Current!.Decrypt(stored));
+
+        // Not unique yet. Uniqueness is the second phase (migration EnforcePiiBlindIndex), applied
+        // once the backfill has given every row a blind index; declaring it here before then would
+        // make EF want to build the unique index over rows that are still NULL.
+        modelBuilder.Entity<PolicyHolder>()
+            .HasIndex(p => p.EmailHash)
+            .HasDatabaseName("IX_PolicyHolder_EmailHash");
+
+        // Replaces a plain (LastName) index, which could not supply the Id tie-breaker the list
+        // appends to every ORDER BY and so had to sort the candidate rows before paging them.
+        modelBuilder.Entity<PiiAccessAudit>()
+            .HasIndex(a => new { a.PolicyHolderId, a.OccurredAt })
+            .HasDatabaseName("IX_PiiAccessAudits_Holder_OccurredAt");
+
+        // Retained so a disclosure review can answer "who read this holder's data" in date order
+        // without scanning the whole log, which is the one query this table exists to answer.
+        modelBuilder.Entity<PiiAccessAudit>()
+            .HasIndex(a => a.OccurredAt)
+            .HasDatabaseName("IX_PiiAccessAudits_OccurredAt");
 
         modelBuilder.Entity<PolicyHolder>()
-            .HasIndex(p => p.Email)
-            .IsUnique();
+            .HasIndex(p => new { p.LastName, p.Id })
+            .HasDatabaseName("IX_PolicyHolders_LastName_Id");
 
+        // Replaces a plain (PolicyId) index. Every claim query by policy — the coverage sum below
+        // and any per-policy listing — also constrains Status, and Amount has to come back for the
+        // sum, so all three are keys rather than the PolicyId alone.
+        //
+        // Filtered to the statuses that still reserve coverage. Denied claims are excluded from the
+        // index entirely: the sum never reads them, and they only accumulate, so keeping them would
+        // grow the structure without ever serving a query. The predicate is written with the numeric
+        // value, not the enum member name — SQL has no idea what "Denied" is.
         modelBuilder.Entity<Claim>()
-            .HasIndex(c => c.PolicyId);
+            .HasIndex(c => new { c.PolicyId, c.Amount })
+            .HasFilter($"[Status] <> {(int)ClaimStatus.Denied}")
+            .HasDatabaseName("IX_Claims_Coverage");
 
-        modelBuilder.Entity<OutboxMessage>()
-            .HasIndex(o => o.ProcessedAt);
+        // Replaces a plain (PolicyId) index for the same reason as IX_Claims_Coverage, but for the
+        // recency listing an adjuster actually runs: ordered claims, newest first.
+        modelBuilder.Entity<Claim>()
+            .HasIndex(c => new { c.FiledAt, c.Id })
+            .HasDatabaseName("IX_Claims_FiledAt_Id");
 
-        // Serves the dispatcher's poll predicate: live, undelivered rows that are due and unclaimed.
-        // A filtered index keeps processed and dead-lettered rows out of the index entirely, so the
-        // structure stays small no matter how much history the table accumulates.
+        // The dispatcher's poll. Keyed on CreatedAt because that is the ORDER BY, so the batch is a
+        // forward walk of the live rows and the engine can stop as soon as it has enough. A filtered
+        // index keeps processed and dead-lettered rows out entirely, so the structure stays small
+        // however much history the table accumulates.
+        //
+        // The two "due and unclaimed" predicates cannot be keys: they are OR-ed against NULL, which
+        // is not sargable, so they are applied as a residual filter over the live rows instead.
         modelBuilder.Entity<OutboxMessage>()
-            .HasIndex(o => new { o.ProcessedAt, o.NextAttemptAt })
+            .HasIndex(o => o.CreatedAt)
             .HasFilter("[ProcessedAt] IS NULL AND [DeadLetteredAt] IS NULL")
             .HasDatabaseName("IX_OutboxMessages_Pending");
 
         // Claims are the record of money that has been claimed and paid out, and they carry the
-// adjudication trail: who decided, when, and why. Cascading a delete from a policyholder through
-// their policies into their claims destroyed that history as a side effect of removing a contact
-// record, with no prompt and no trace of what was lost - and there is no API that reads a claim
-// back once its policy is gone, so nothing downstream would even notice. Both relationships
-// restrict instead: the database refuses the delete while dependents exist, and the caller is told
-// why. Retirement of a holder or a policy is a status change (a policy is cancelled, not deleted);
-// this only removes the silent destruction of financial records.
-modelBuilder.Entity<Policy>()
+        // adjudication trail: who decided, when, and why. Cascading a delete from a policyholder
+        // through their policies into their claims destroyed that history as a side effect of
+        // removing a contact record, with no prompt and no trace of what was lost - and there is no
+        // API that reads a claim back once its policy is gone, so nothing downstream would even
+        // notice. Both relationships restrict instead: the database refuses the delete while
+        // dependents exist, and the caller is told why. Retirement of a holder or a policy is a
+        // status change (a policy is cancelled, not deleted); this only removes the silent
+        // destruction of financial records.
+        modelBuilder.Entity<Policy>()
+            .HasOne(p => p.PolicyHolder)
+            .WithMany(ph => ph.Policies)
+            .HasForeignKey(p => p.PolicyHolderId)
+            .OnDelete(DeleteBehavior.Restrict);
+
+        modelBuilder.Entity<Claim>()
+            .HasOne(c => c.Policy)
+            .WithMany(p => p.Claims)
+            .HasForeignKey(c => c.PolicyId)
+            .OnDelete(DeleteBehavior.Restrict);
+
+        // The dispatcher's second read: the rows this instance just won the claim on. Nothing
+        // indexed LockToken, so every batch that claimed anything finished with a full table scan to
+        // collect them. Rarely true and almost always unique, so a filtered index is both smaller
+        // and cheaper than a general one.
+        modelBuilder.Entity<OutboxMessage>()
+            .HasIndex(o => o.LockedUntil)
+            .HasFilter("[LockToken] IS NOT NULL")
+            .HasDatabaseName("IX_OutboxMessages_Claimed");
+
         // Configured per CLR type rather than through the interface: IsRowVersion is provider
         // specific (a SQL Server rowversion column), so it has to be applied to each mapped entity
         // the provider will recognise it on.
         ConfigureConcurrencyToken<Policy>(modelBuilder);
         ConfigureConcurrencyToken<Claim>(modelBuilder);
         ConfigureConcurrencyToken<PolicyHolder>(modelBuilder);
+        ConfigureConcurrencyToken<BusinessNumberSequence>(modelBuilder);
+
+        // Composite rather than a surrogate key: the pair is what uniquely identifies a counter, and
+        // it is the pair the allocation read filters on.
+        modelBuilder.Entity<BusinessNumberSequence>()
+            .HasKey(s => new { s.Kind, s.Year });
 
         modelBuilder.Entity<Policy>()
             .HasOne(p => p.PolicyHolder)

@@ -17,9 +17,15 @@ public class Claim : IAuditableEntity
     /// <summary>
     ///     The unique claim number generated for this claim.
     /// </summary>
+    /// <remarks>
+    ///     A sequential number such as <c>CLM-2026-000001</c>, reserved by
+    ///     <see cref="Services.IBusinessNumberGenerator" />. Left without a default so that a write
+    ///     path which forgets to reserve one fails on the <c>NOT NULL</c> constraint instead of
+    ///     quietly persisting another unquotable GUID.
+    /// </remarks>
     [Required]
     [MaxLength(50)]
-    public string ClaimNumber { get; set; } = Guid.NewGuid().ToString();
+    public string ClaimNumber { get; set; } = string.Empty;
 
     /// <summary>
     ///     The description of the claim.

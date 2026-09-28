@@ -20,6 +20,17 @@ public interface ICurrentUser
     ///     existed.
     /// </remarks>
     string Actor { get; }
+
+    /// <summary>
+    ///     The roles the current caller holds, empty when nothing is authenticated.
+    /// </summary>
+    IReadOnlyCollection<string> Roles { get; }
+
+    /// <summary>
+    ///     Whether the current caller holds a role.
+    /// </summary>
+    /// <param name="role">The role to test for.</param>
+    bool IsInRole(string role);
 }
 
 /// <summary>
@@ -42,4 +53,14 @@ public class HttpContextCurrentUser(IHttpContextAccessor httpContextAccessor) : 
             return identity is { IsAuthenticated: true, Name.Length: > 0 } ? identity.Name : SystemActor;
         }
     }
+
+    /// <inheritdoc />
+    public IReadOnlyCollection<string> Roles
+        => httpContextAccessor.HttpContext?.User.FindAll(PolicyRoles.ClaimType)
+               .Select(claim => claim.Value)
+               .ToArray()
+           ?? [];
+
+    /// <inheritdoc />
+    public bool IsInRole(string role) => Roles.Contains(role, StringComparer.Ordinal);
 }

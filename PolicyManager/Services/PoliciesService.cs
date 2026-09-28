@@ -11,7 +11,7 @@ namespace PolicyManager.Services;
 /// <summary>
 ///     Service implementation for managing insurance policies with transactional outbox support.
 /// </summary>
-public class PoliciesService(AppDbContext context) : IPoliciesService
+public class PoliciesService(AppDbContext context, IBusinessNumberGenerator numbers) : IPoliciesService
 {
     /// <summary>
     ///     Retrieves one page of policies, optionally filtered by status, ordered, with the total
@@ -147,6 +147,10 @@ public class PoliciesService(AppDbContext context) : IPoliciesService
 
         var policy = new Policy
         {
+            // Reserved before the insert so it lands in the same transaction as the row. The
+            // reservation is not rolled back with a failed create, so the series can contain gaps —
+            // which is fine, because a number only has to be unique and increasing, never dense.
+            PolicyNumber = await numbers.NextAsync(BusinessNumberGenerator.PolicyKind, cancellationToken),
             Premium = dto.Premium,
             Status = PolicyStatus.Active,
             PolicyHolderId = dto.PolicyHolderId,

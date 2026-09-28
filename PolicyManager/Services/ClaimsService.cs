@@ -12,7 +12,7 @@ namespace PolicyManager.Services;
 /// <summary>
 ///     Service implementation for managing insurance claims with transactional outbox support.
 /// </summary>
-public class ClaimsService(AppDbContext context) : IClaimsService
+public class ClaimsService(AppDbContext context, IBusinessNumberGenerator numbers) : IClaimsService
 {
     /// <summary>
     ///     Retrieves one page of claims, ordered, with the total count of the whole result set.
@@ -154,6 +154,7 @@ public class ClaimsService(AppDbContext context) : IClaimsService
 
         var claim = new Claim
         {
+            ClaimNumber = await numbers.NextAsync(BusinessNumberGenerator.ClaimKind, cancellationToken),
             PolicyId = dto.PolicyId,
             Amount = dto.Amount,
             Description = dto.Description,

@@ -3,6 +3,7 @@ using System;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Infrastructure;
 using Microsoft.EntityFrameworkCore.Metadata;
+using Microsoft.EntityFrameworkCore.Migrations;
 using Microsoft.EntityFrameworkCore.Storage.ValueConversion;
 using PolicyManager.Data;
 
@@ -11,9 +12,11 @@ using PolicyManager.Data;
 namespace PolicyManager.Migrations
 {
     [DbContext(typeof(AppDbContext))]
-    partial class AppDbContextModelSnapshot : ModelSnapshot
+    [Migration("20260928175037_QueryIndexes")]
+    partial class QueryIndexes
     {
-        protected override void BuildModel(ModelBuilder modelBuilder)
+        /// <inheritdoc />
+        protected override void BuildTargetModel(ModelBuilder modelBuilder)
         {
 #pragma warning disable 612, 618
             modelBuilder
@@ -183,50 +186,6 @@ namespace PolicyManager.Migrations
                     b.ToTable("OutboxMessages");
                 });
 
-            modelBuilder.Entity("PolicyManager.Models.PiiAccessAudit", b =>
-                {
-                    b.Property<long>("Id")
-                        .ValueGeneratedOnAdd()
-                        .HasColumnType("bigint");
-
-                    SqlServerPropertyBuilderExtensions.UseIdentityColumn(b.Property<long>("Id"));
-
-                    b.Property<string>("CorrelationId")
-                        .HasMaxLength(128)
-                        .HasColumnType("nvarchar(128)");
-
-                    b.Property<bool>("Disclosed")
-                        .HasColumnType("bit");
-
-                    b.Property<DateTime>("OccurredAt")
-                        .HasColumnType("datetime2");
-
-                    b.Property<string>("Path")
-                        .HasMaxLength(256)
-                        .HasColumnType("nvarchar(256)");
-
-                    b.Property<int>("PolicyHolderId")
-                        .HasColumnType("int");
-
-                    b.Property<string>("ReadBy")
-                        .HasMaxLength(100)
-                        .HasColumnType("nvarchar(100)");
-
-                    b.Property<string>("ReadByRoles")
-                        .HasMaxLength(200)
-                        .HasColumnType("nvarchar(200)");
-
-                    b.HasKey("Id");
-
-                    b.HasIndex("OccurredAt")
-                        .HasDatabaseName("IX_PiiAccessAudits_OccurredAt");
-
-                    b.HasIndex("PolicyHolderId", "OccurredAt")
-                        .HasDatabaseName("IX_PiiAccessAudits_Holder_OccurredAt");
-
-                    b.ToTable("PiiAccessAudits");
-                });
-
             modelBuilder.Entity("PolicyManager.Models.Policy", b =>
                 {
                     b.Property<int>("Id")
@@ -312,10 +271,6 @@ namespace PolicyManager.Migrations
 
                     b.Property<string>("Email")
                         .IsRequired()
-                        .HasColumnType("nvarchar(max)");
-
-                    b.Property<string>("EmailHash")
-                        .IsRequired()
                         .HasColumnType("nvarchar(450)");
 
                     b.Property<string>("FirstName")
@@ -343,9 +298,8 @@ namespace PolicyManager.Migrations
 
                     b.HasKey("Id");
 
-                    b.HasIndex("EmailHash")
-                        .IsUnique()
-                        .HasDatabaseName("IX_PolicyHolder_EmailHash");
+                    b.HasIndex("Email")
+                        .IsUnique();
 
                     b.HasIndex("LastName", "Id")
                         .HasDatabaseName("IX_PolicyHolders_LastName_Id");
@@ -358,7 +312,7 @@ namespace PolicyManager.Migrations
                     b.HasOne("PolicyManager.Models.Policy", "Policy")
                         .WithMany("Claims")
                         .HasForeignKey("PolicyId")
-                        .OnDelete(DeleteBehavior.Restrict)
+                        .OnDelete(DeleteBehavior.Cascade)
                         .IsRequired();
 
                     b.Navigation("Policy");
@@ -369,7 +323,7 @@ namespace PolicyManager.Migrations
                     b.HasOne("PolicyManager.Models.PolicyHolder", "PolicyHolder")
                         .WithMany("Policies")
                         .HasForeignKey("PolicyHolderId")
-                        .OnDelete(DeleteBehavior.Restrict)
+                        .OnDelete(DeleteBehavior.Cascade)
                         .IsRequired();
 
                     b.Navigation("PolicyHolder");

@@ -16,8 +16,14 @@ public class ClaimsServiceTests : ServiceTestBase
 
     public ClaimsServiceTests()
     {
-        _claimsService = new ClaimsService(Context);
+        _claimsService = new ClaimsService(Context, Numbers);
     }
+
+    /// <summary>
+    ///     Seeds a test policy with a distinct business number, because the number is unique and
+    ///     two policies sharing one would be indistinguishable in any assertion that reads it back.
+    /// </summary>
+    private int _policyNumber = 1;
 
     /// <summary>
     ///     Seeds a test policy into the database.
@@ -31,7 +37,8 @@ public class ClaimsServiceTests : ServiceTestBase
         {
             PolicyHolderId = holder.Id,
             Premium = 500m,
-            Status = PolicyStatus.Active
+            Status = PolicyStatus.Active,
+            PolicyNumber = $"POL-2026-{_policyNumber++:D6}"
         };
 
         Context.Policies.Add(policy);

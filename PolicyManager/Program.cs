@@ -1,3 +1,4 @@
+using Asp.Versioning;
 using System.Reflection;
 using System.Text.Json;
 using System.Text.RegularExpressions;
@@ -6,6 +7,8 @@ using Microsoft.AspNetCore.Diagnostics.HealthChecks;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.DependencyInjection.Extensions;
 using Microsoft.Extensions.Diagnostics.HealthChecks;
+using Microsoft.Extensions.Options;
+using Microsoft.OpenApi;
 using PolicyManager.Configuration;
 using PolicyManager.Data;
 using PolicyManager.Errors;
@@ -39,6 +42,30 @@ builder.Services.AddProblemDetails(options =>
 
 builder.Services.AddExceptionHandler<GlobalExceptionHandler>();
 
+builder.Services.Configure<JwtOptions>(builder.Configuration.GetSection(JwtOptions.SectionName));
+builder.Services.AddBearerAuthentication();
+builder.Services.AddPolicyAuthorization();
+
+builder.Services.Configure<PiiOptions>(builder.Configuration.GetSection(PiiOptions.SectionName));
+builder.Services.AddSingleton<PiiCipher>();
+builder.Services.AddSingleton<PiiBackfillService>();
+
+// Versioning is configured before MVC so the API explorer can read it, and both are additive: the
+// unversioned routes still exist and still mean 1.0. ReportApiVersions makes every response say which
+// versions the endpoint supports, so a client can discover that without a second call or a document.
+builder.Services
+    .AddApiVersioning(options =>
+    {
+        options.DefaultApiVersion = new ApiVersion(1, 0);
+        options.AssumeDefaultVersionWhenUnspecified = true;
+        options.ReportApiVersions = true;
+    })
+    .AddApiExplorer(versions =>
+    {
+        versions.GroupNameFormat = "'v'VVV";
+        versions.SubstituteApiVersionInUrl = true;
+    });
+
 builder.Services.AddControllers();
 builder.Services.AddEndpointsApiExplorer();
 
@@ -49,6 +76,14 @@ if (builder.Environment.IsDevelopment())
         var xmlFile = $"{Assembly.GetExecutingAssembly().GetName().Name}.xml";
         var xmlPath = Path.Combine(AppContext.BaseDirectory, xmlFile);
         options.IncludeXmlComments(xmlPath);
+
+        // One document per version rather than a merged one, so a diff between two of them is
+        // exactly the surface change in that version and nothing else.
+        options.SwaggerDoc(ApiVersions.V1, new OpenApiInfo
+        {
+            Title = "Policy Manager API",
+            Version = ApiVersions.V1
+        });
     });
 }
 
@@ -65,6 +100,26 @@ builder.Services.AddHealthChecks()
 
 builder.Services.Configure<OutboxOptions>(builder.Configuration.GetSection(OutboxOptions.SectionName));
 
+builder.Services.Configure<RateLimitOptions>(builder.Configuration.GetSection(RateLimitOptions.SectionName));
+
+// The Kestrel limit is deployment configuration and is read here, eagerly, because Kestrel options
+// are frozen once the host is built. The runtime limits are not: they are read per request, so a
+// configuration source added after this point still applies.
+var rateLimits = builder.Configuration.GetSection(RateLimitOptions.SectionName).Get<RateLimitOptions>()
+                 ?? new RateLimitOptions();
+
+// The server-side body limit. This is the one that matters: Kestrel refuses to read the rest of an
+// oversized upload, so the bytes never accumulate. RequestSizeLimitMiddleware sits in front of it to
+// turn the same condition into a ProblemDetails response and to make the behaviour observable under
+// TestServer.
+if (rateLimits.MaxRequestBodySizeBytes > 0)
+{
+    builder.WebHost.ConfigureKestrel(kestrel =>
+        kestrel.Limits.MaxRequestBodySize = rateLimits.MaxRequestBodySizeBytes);
+}
+
+builder.Services.AddApiRateLimiting();
+
 
 // The write generation is process-wide state, not per request: it has to be shared by the reader
 // and the writer that race each other, and those are always different requests. Scoping it would
@@ -74,11 +129,16 @@ builder.Services.AddScoped<IPolicyHoldersService, PolicyHoldersService>();
 builder.Services.AddScoped<IPoliciesService, PoliciesService>();
 builder.Services.AddScoped<IClaimsService, ClaimsService>();
 
+// Scoped, not singleton: the generator allocates through the request's own DbContext, so that a
+// failure rolls back with the rest of the unit of work rather than against a long-lived connection.
+builder.Services.AddScoped<IBusinessNumberGenerator, BusinessNumberGenerator>();
+
 // The audit columns are stamped from here rather than by each service, so a new write path is
 // audited by default. ICurrentUser is scoped because it reads the ambient HTTP context, which
 // differs per request.
 builder.Services.AddHttpContextAccessor();
 builder.Services.AddScoped<ICurrentUser, HttpContextCurrentUser>();
+builder.Services.AddScoped<IPiiGuard, PiiGuard>();
 
 builder.Services.TryAddSingleton(TimeProvider.System);
 builder.Services.TryAddSingleton<IOutboxPublisher, LoggingOutboxPublisher>();
@@ -86,6 +146,27 @@ builder.Services.AddScoped<OutboxDispatcher>();
 builder.Services.AddHostedService<OutboxProcessorBackgroundService>();
 
 var app = builder.Build();
+
+// Fails fast at startup rather than at the first request. A deployment that has not supplied a
+// signing key must not come up and quietly accept unsigned tokens, and must not come up with
+// authentication switched off and looking healthy while doing so. Resolved from the built host so
+// the check sees the finished configuration, including any source registered after this point.
+app.Services.GetRequiredService<IOptions<JwtOptions>>().Value.Validate();
+
+// The PII cipher is validated first and then published to the static the EF value converters read,
+// because a converter is constructed while the model is being built — before any service provider
+// exists to resolve options from. Validating before publishing means a missing or short key stops
+// the process rather than producing a model that encrypts with nothing.
+app.Services.GetRequiredService<IOptions<PiiOptions>>().Value.Validate();
+PiiCipher.Use(app.Services.GetRequiredService<PiiCipher>());
+
+// Only on a database that still holds addresses written before encryption existed. Selects rows
+// with no blind index, so a converted table makes the first pass return nothing and the task stops.
+if (app.Configuration.GetValue($"{PiiOptions.SectionName}:BackfillOnStartup", true))
+{
+    var backfill = app.Services.GetRequiredService<PiiBackfillService>();
+    _ = Task.Run(() => backfill.RunUntilCompleteAsync(CancellationToken.None), CancellationToken.None);
+}
 
 if (app.Environment.IsDevelopment())
 {
@@ -95,11 +176,31 @@ if (app.Environment.IsDevelopment())
 
 app.UseMiddleware<CorrelationIdMiddleware>();
 
+// Ahead of everything that can fail, and ahead of the exception handler's own write path, so an
+// oversized body is refused before any model binding or handler work begins.
+app.UseMiddleware<RequestSizeLimitMiddleware>();
+
 // Must precede the exception handler so the correlation ID is already in scope when a failure is
 // classified, and precede the rest of the pipeline so it covers everything downstream.
 app.UseExceptionHandler();
 
 app.UseHttpsRedirection();
+
+// Explicit rather than left to the implicit insertion WebApplication performs at the head of the
+// pipeline, so the position of routing relative to the middleware below is stated rather than
+// inferred.
+app.UseRouting();
+
+// After UseRouting, so a per-endpoint [EnableRateLimiting]/[DisableRateLimiting] override is
+// honoured, and after CorrelationIdMiddleware, because the partition key is read from the item it
+// stores. Ahead of authentication so a flood is shed before any token is validated — a JWT is a
+// signed blob that costs real CPU to check, and verifying one per rejected request would let an
+// unauthenticated caller spend the very CPU the limiter exists to protect.
+app.UseRateLimiter();
+
+// Ahead of UseAuthorization, which is what actually evaluates the policies, and behind the rate
+// limiter so a flood is shed before a token is validated.
+app.UseAuthentication();
 app.UseAuthorization();
 
 app.MapControllers();

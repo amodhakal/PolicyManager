@@ -27,11 +27,33 @@ public class PolicyHolder : IAuditableEntity
     public string LastName { get; set; } = string.Empty;
 
     /// <summary>
-    ///     The email address of the policyholder.
+    ///     The email address of the policyholder, stored encrypted.
     /// </summary>
+    /// <remarks>
+    ///     The CLR property is a plain string and the encryption happens in the EF value converter, so
+    ///     nothing above the persistence layer has to know the value is ciphertext. It is never null
+    ///     and never empty: an absent address is not a state this system has, and a nullable encrypted
+    ///     column is one more thing to get wrong in a query.
+    /// </remarks>
     [Required]
     [EmailAddress]
     public string Email { get; set; } = string.Empty;
+
+    /// <summary>
+    ///     A keyed hash of the email address.
+    /// </summary>
+    /// <remarks>
+    ///     Unique once the backfill has completed and the second-phase migration has applied the
+    ///     constraint. Null for rows written before this feature was deployed, until the backfill
+    ///     converts them.
+    /// </remarks>
+    /// <remarks>
+    ///     The database can only enforce uniqueness over a deterministic value, and ciphertext is
+    ///     deliberately randomised, so duplicate detection runs against this instead. It is written
+    ///     from the same input in the same save as <see cref="Email" /> and is never exposed: it is an
+    ///     equality key, not a weaker copy of the address.
+    /// </remarks>
+    public string? EmailHash { get; set; }
 
     /// <summary>
     ///     The collection of policies owned by this policyholder.
