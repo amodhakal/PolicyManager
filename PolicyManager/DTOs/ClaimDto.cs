@@ -13,9 +13,19 @@ public class ClaimDto
     public int Id { get; set; }
 
     /// <summary>
+    ///     The unique claim number generated for the claim.
+    /// </summary>
+    public string ClaimNumber { get; set; } = string.Empty;
+
+    /// <summary>
     ///     The unique identifier of the policy associated with the claim.
     /// </summary>
     public int PolicyId { get; set; }
+
+    /// <summary>
+    ///     The description of the claim.
+    /// </summary>
+    public string Description { get; set; } = string.Empty;
 
     /// <summary>
     ///     The claim amount in the currency specified by the policy.
