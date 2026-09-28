@@ -1,4 +1,3 @@
-using System.Text.Json;
 using Microsoft.EntityFrameworkCore;
 using PolicyManager.Data;
 using PolicyManager.DTOs;
@@ -84,16 +83,12 @@ public class PoliciesService(AppDbContext context) : IPoliciesService
             EndDate = dto.EndDate
         };
 
-        context.Policies.Add(policy);
+        await context.AddWithOutboxAsync(
+            policy,
+            "PolicyCreated",
+            p => new { p.Id, p.PolicyNumber, p.Premium, p.PolicyHolderId, p.Status },
+            cancellationToken);
 
-        var outboxMessage = new OutboxMessage
-        {
-            Type = "PolicyCreated",
-            Content = JsonSerializer.Serialize(new { policy.Id, policy.PolicyNumber, policy.Premium, policy.PolicyHolderId, policy.Status })
-        };
-        context.OutboxMessages.Add(outboxMessage);
-
-        await context.SaveChangesAsync(cancellationToken);
         return policy.Id;
     }
 
@@ -111,14 +106,11 @@ public class PoliciesService(AppDbContext context) : IPoliciesService
         policy.Status = dto.Status;
         policy.Premium = dto.Premium;
 
-        var outboxMessage = new OutboxMessage
-        {
-            Type = "PolicyUpdated",
-            Content = JsonSerializer.Serialize(new { policy.Id, policy.PolicyNumber, policy.Premium, policy.Status })
-        };
-        context.OutboxMessages.Add(outboxMessage);
-
-        await context.SaveChangesAsync(cancellationToken);
+        await context.SaveWithOutboxAsync(
+            policy,
+            "PolicyUpdated",
+            p => new { p.Id, p.PolicyNumber, p.Premium, p.Status },
+            cancellationToken);
     }
 
     /// <summary>
@@ -133,13 +125,10 @@ public class PoliciesService(AppDbContext context) : IPoliciesService
 
         policy.Status = PolicyStatus.Cancelled;
 
-        var outboxMessage = new OutboxMessage
-        {
-            Type = "PolicyCancelled",
-            Content = JsonSerializer.Serialize(new { policy.Id, policy.PolicyNumber, policy.Status })
-        };
-        context.OutboxMessages.Add(outboxMessage);
-
-        await context.SaveChangesAsync(cancellationToken);
+        await context.SaveWithOutboxAsync(
+            policy,
+            "PolicyCancelled",
+            p => new { p.Id, p.PolicyNumber, p.Status },
+            cancellationToken);
     }
 }

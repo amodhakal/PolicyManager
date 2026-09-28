@@ -45,15 +45,10 @@ dotnet ef database update --project PolicyManager/PolicyManager.csproj
 dotnet run --project PolicyManager/PolicyManager.csproj
 ```
 
-**Migrations are required, and they are currently blocked.** The schema is managed by
-code-first EF Core migrations and nothing creates the tables for you — the API will fail to
-serve any request that touches the database until migrations have been applied. Step 2 is
-the command, run from the repository root.
-
-However, that command **fails today** with EF Core's `PendingModelChangesWarning` error,
-because the model is ahead of the last migration snapshot. See
-[Known Issues](#known-issues) below. Run `docker compose up -d db` and create the
-`PolicyManager` database by hand in the meantime if you need a working local database.
+**Migrations are required.** The schema is managed by code-first EF Core migrations and
+nothing creates the tables for you — the API will fail to serve any request that touches the
+database until migrations have been applied. Step 2 is the command, run from the repository
+root.
 
 To create a new migration after changing a model:
 
@@ -124,12 +119,6 @@ in `.env.example` is deliberately invalid and will crash-loop the database conta
 
 ## Known Issues
 
-- **`dotnet ef database update` currently fails.** EF Core 9 raises
-  `PendingModelChangesWarning` as an error, and the transactional-outbox commit added the
-  `OutboxMessages` DbSet and index **without a migration**. The model is therefore ahead of the
-  last snapshot and no migration can be applied until a migration is added for `OutboxMessage`.
-  Until then the API cannot create its own schema. The unit tests do not catch this because
-  they run on the EF InMemory provider, which builds its schema from the model instead.
 - **The database is never created for you.** `compose.yaml` provisions the SQL Server
   *instance* but no `PolicyManager` database. `dotnet ef database update` and the container
   entrypoint both connect with `Database=PolicyManager`, so that database must exist first.
@@ -249,3 +238,29 @@ Be aware that the collection entry is a cache-invalidation seam: writes made **o
 service (direct `AppDbContext` use, a future bulk import) do not invalidate it and will be
 masked until the entry expires.
 
+
+---
+
+## Transactional Outbox
+
+Policy creation, policy updates and cancellation, claim filing and claim adjudication each
+write a row to an `OutboxMessages` table in the **same database transaction** as the entity
+change. `OutboxProcessorBackgroundService` polls that table and dispatches anything not yet
+processed, so a domain change and the notification it produces can never diverge: either both
+rows commit or neither does.
+
+The write path is centralised in `PolicyManager/Data/OutboxTransaction.cs`:
+
+- `AddWithOutboxAsync` stages a new entity, and `SaveWithOutboxAsync` flushes changes to an
+  already tracked one.
+- Both open an explicit transaction, `SaveChangesAsync` first so the database assigns the
+  generated identifier, **then** serialise the payload, write the message, and commit.
+
+The ordering matters. Serialising before the insert produces a message whose `Id` is always
+`0`, because the key is only assigned by the database on insert. Flushing first and
+serialising second is what makes the published payload carry a real identifier, and the
+explicit transaction is what preserves atomicity across the two writes.
+
+Messages currently carry a `Type` discriminator (`PolicyCreated`, `PolicyUpdated`,
+`PolicyCancelled`, `PolicyHolderCreated`, `ClaimCreated`, `ClaimStatusUpdated`) and a JSON
+`Content` payload. The processor marks each row with `ProcessedAt` when it drains it.

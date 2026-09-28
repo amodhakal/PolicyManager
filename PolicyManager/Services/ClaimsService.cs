@@ -1,4 +1,3 @@
-using System.Text.Json;
 using Microsoft.EntityFrameworkCore;
 using PolicyManager.Data;
 using PolicyManager.DTOs;
@@ -72,16 +71,12 @@ public class ClaimsService(AppDbContext context) : IClaimsService
             FiledAt = DateTime.UtcNow
         };
 
-        context.Claims.Add(claim);
+        await context.AddWithOutboxAsync(
+            claim,
+            "ClaimCreated",
+            c => new { c.Id, c.PolicyId, c.Amount, c.Status, c.FiledAt },
+            cancellationToken);
 
-        var outboxMessage = new OutboxMessage
-        {
-            Type = "ClaimCreated",
-            Content = JsonSerializer.Serialize(new { claim.Id, claim.PolicyId, claim.Amount, claim.Status, claim.FiledAt })
-        };
-        context.OutboxMessages.Add(outboxMessage);
-
-        await context.SaveChangesAsync(cancellationToken);
         return claim.Id;
     }
 
@@ -98,13 +93,10 @@ public class ClaimsService(AppDbContext context) : IClaimsService
 
         claim.Status = dto.Status;
 
-        var outboxMessage = new OutboxMessage
-        {
-            Type = "ClaimStatusUpdated",
-            Content = JsonSerializer.Serialize(new { claim.Id, claim.PolicyId, claim.Status })
-        };
-        context.OutboxMessages.Add(outboxMessage);
-
-        await context.SaveChangesAsync(cancellationToken);
+        await context.SaveWithOutboxAsync(
+            claim,
+            "ClaimStatusUpdated",
+            c => new { c.Id, c.PolicyId, c.Status },
+            cancellationToken);
     }
 }

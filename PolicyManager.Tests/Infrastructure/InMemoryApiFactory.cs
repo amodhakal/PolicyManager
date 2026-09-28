@@ -1,6 +1,7 @@
 using Microsoft.AspNetCore.Hosting;
 using Microsoft.AspNetCore.Mvc.Testing;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.EntityFrameworkCore.Diagnostics;
 using Microsoft.Extensions.DependencyInjection;
 using PolicyManager.Data;
 
@@ -38,7 +39,11 @@ public class InMemoryApiFactory : WebApplicationFactory<Program>
 
             foreach (var d in toRemove) services.Remove(d);
 
-            services.AddDbContext<AppDbContext>(options => options.UseInMemoryDatabase(_databaseName));
+            services.AddDbContext<AppDbContext>(options => options
+                .UseInMemoryDatabase(_databaseName)
+                // The outbox helpers wrap the entity write and the message write in an explicit transaction. The
+                // in-memory store has no transactions, so it raises this warning instead; it is expected here.
+                .ConfigureWarnings(w => w.Ignore(InMemoryEventId.TransactionIgnoredWarning)));
         });
     }
 }
