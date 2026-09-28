@@ -237,4 +237,85 @@ public class ClaimsControllerTests : ApiIntegrationTestBase
         Assert.Equal("Conflict", problem.Title);
         Assert.Contains("Denied", problem.Detail);
     }
+
+    /// <summary>
+    ///     A policy's claim search returns only the claims filed against that policy.
+    /// </summary>
+    [Fact]
+    public async Task GetByPolicy_ReturnsOnlyThatPolicysClaims()
+    {
+        var holderId = await SeedHolderAsync();
+        var first = await SeedPolicyAsync(holderId);
+        var second = await SeedPolicyAsync(holderId);
+
+        await SeedClaimAsync(first, 100m);
+        await SeedClaimAsync(first, 200m);
+        await SeedClaimAsync(second, 300m);
+
+        var res = await Client.GetAsync($"/api/policies/{first}/claims");
+        Assert.Equal(HttpStatusCode.OK, res.StatusCode);
+
+        var page = await res.Content.ReadFromJsonAsync<PagedResult<ClaimDto>>();
+        Assert.NotNull(page);
+        Assert.Equal(2, page!.TotalCount);
+        Assert.All(page.Items, c => Assert.Equal(first, c.PolicyId));
+    }
+
+    /// <summary>
+    ///     A policy nobody has claimed against gets an empty page, not a 404.
+    /// </summary>
+    [Fact]
+    public async Task GetByPolicy_PolicyWithNoClaims_ReturnsAnEmptyPage()
+    {
+        var policyId = await SeedPolicyForNewHolderAsync();
+
+        var res = await Client.GetAsync($"/api/policies/{policyId}/claims");
+        Assert.Equal(HttpStatusCode.OK, res.StatusCode);
+
+        var page = await res.Content.ReadFromJsonAsync<PagedResult<ClaimDto>>();
+        Assert.NotNull(page);
+        Assert.Empty(page!.Items);
+        Assert.Equal(0, page.TotalCount);
+    }
+
+    /// <summary>
+    ///     Searching the claims of a policy that does not exist is a 404, so an empty claim history is
+    ///     never confused with the wrong policy.
+    /// </summary>
+    [Fact]
+    public async Task GetByPolicy_NonExistentPolicy_Returns404()
+    {
+        var res = await Client.GetAsync("/api/policies/99999/claims");
+        Assert.Equal(HttpStatusCode.NotFound, res.StatusCode);
+    }
+
+    /// <summary>
+    ///     The search pages and filters like the unfiltered list does.
+    /// </summary>
+    [Fact]
+    public async Task GetByPolicy_PageAndStatusFilter_Compose()
+    {
+        var policyId = await SeedPolicyForNewHolderAsync();
+        var approved = await SeedClaimAsync(policyId, 400m);
+        await SeedClaimAsync(policyId, 100m);
+        await SeedClaimAsync(policyId, 200m);
+
+        await Client.PatchAsJsonAsync($"/api/claims/{approved}/status",
+            new UpdateClaimStatusDto { Status = ClaimStatus.Approved });
+
+        var res = await Client.GetAsync(
+            $"/api/policies/{policyId}/claims?status=Pending&page=2&pageSize=1&sortBy=amount");
+        Assert.Equal(HttpStatusCode.OK, res.StatusCode);
+
+        var page = await res.Content.ReadFromJsonAsync<PagedResult<ClaimDto>>();
+        Assert.NotNull(page);
+        Assert.Equal(2, page!.TotalCount);
+        Assert.Equal(2, page.TotalPages);
+
+        // The two pending claims are 100 and 200, so ascending by amount the second page is the 200.
+        Assert.Equal(200m, Assert.Single(page.Items).Amount);
+        Assert.Equal(ClaimStatus.Pending, page.Items[0].Status);
+        Assert.True(page.HasPrevious);
+        Assert.False(page.HasNext);
+    }
 }

@@ -14,10 +14,12 @@ namespace PolicyManager.Tests.Services;
 public class ClaimsServiceTests : ServiceTestBase
 {
     private readonly ClaimsService _claimsService;
+    private readonly PoliciesService _policiesService;
 
     public ClaimsServiceTests()
     {
         _claimsService = new ClaimsService(Context, Numbers);
+        _policiesService = new PoliciesService(Context, Numbers);
     }
 
     /// <summary>
@@ -280,5 +282,110 @@ public class ClaimsServiceTests : ServiceTestBase
         await Assert.ThrowsAsync<ConflictException>(() => _claimsService.Delete(id));
 
         Assert.Empty(await Context.OutboxMessages.ToListAsync());
+    }
+
+    /// <summary>
+    ///     A policy's claim search returns only the claims filed against that policy.
+    /// </summary>
+    [Fact]
+    public async Task GetByPolicy_ReturnsOnlyThatPolicysClaims()
+    {
+        var holder = await SeedHolderEntityAsync();
+        var policyId = await SeedPolicy();
+        var otherPolicyId = await _policiesService.Create(new CreatePolicyDto
+        {
+            PolicyHolderId = holder.Id, Premium = 400m, Type = PolicyType.Home,
+            StartDate = new DateTime(2026, 1, 1), EndDate = new DateTime(2027, 1, 1)
+        });
+
+        await SeedClaim(policyId, 100m);
+        await SeedClaim(policyId, 200m);
+        await SeedClaim(otherPolicyId, 300m);
+
+        var result = await _claimsService.GetByPolicy(policyId, new PaginationQuery());
+
+        Assert.Equal(2, result.Items.Count);
+        Assert.Equal(2, result.TotalCount);
+        Assert.All(result.Items, c => Assert.Equal(policyId, c.PolicyId));
+    }
+
+    /// <summary>
+    ///     A policy nobody has claimed against gets an empty page, which is not the same answer as a
+    ///     policy that does not exist.
+    /// </summary>
+    [Fact]
+    public async Task GetByPolicy_NoClaims_ReturnsAnEmptyPage()
+    {
+        var policyId = await SeedPolicy();
+
+        var result = await _claimsService.GetByPolicy(policyId, new PaginationQuery());
+
+        Assert.Empty(result.Items);
+        Assert.Equal(0, result.TotalCount);
+        Assert.Equal(0, result.TotalPages);
+    }
+
+    /// <summary>
+    ///     Searching the claims of a policy nobody holds is a not-found rather than an empty page.
+    /// </summary>
+    [Fact]
+    public async Task GetByPolicy_NonExistentPolicy_ThrowsNotFound()
+    {
+        await Assert.ThrowsAsync<NotFoundException>(() =>
+            _claimsService.GetByPolicy(99999, new PaginationQuery()));
+    }
+
+    /// <summary>
+    ///     The status filter narrows a policy's claims, and the count describes the filtered set.
+    /// </summary>
+    [Fact]
+    public async Task GetByPolicy_StatusFilter_CountsOnlyTheFilteredSet()
+    {
+        var policyId = await SeedPolicy();
+        var pending = await SeedClaim(policyId, 100m);
+        await SeedClaim(policyId, 200m);
+
+        await _claimsService.UpdateStatus(pending, new UpdateClaimStatusDto { Status = ClaimStatus.Approved });
+
+        var result = await _claimsService.GetByPolicy(policyId, new PaginationQuery(), ClaimStatus.Pending);
+
+        Assert.Equal(1, result.TotalCount);
+        Assert.Equal(ClaimStatus.Pending, Assert.Single(result.Items).Status);
+    }
+
+    /// <summary>
+    ///     The search pages the policy's own claims, with the total scoped to them.
+    /// </summary>
+    [Fact]
+    public async Task GetByPolicy_PagesThePolicysOwnClaims()
+    {
+        var holder = await SeedHolderEntityAsync();
+        var policyId = await SeedPolicy();
+        var otherPolicyId = await _policiesService.Create(new CreatePolicyDto
+        {
+            PolicyHolderId = holder.Id, Premium = 400m, Type = PolicyType.Life,
+            StartDate = new DateTime(2026, 1, 1), EndDate = new DateTime(2027, 1, 1)
+        });
+
+        await SeedClaim(policyId, 300m);
+        await SeedClaim(policyId, 200m);
+        var smallest = await SeedClaim(policyId, 100m);
+        await SeedClaim(otherPolicyId, 400m);
+
+        var page = new PaginationQuery { SortBy = "amount", Descending = true, PageSize = 2 };
+
+        var first = await _claimsService.GetByPolicy(policyId, page);
+
+        Assert.Equal(new[] { 300m, 200m }, first.Items.Select(c => c.Amount));
+        Assert.Equal(3, first.TotalCount);
+        Assert.Equal(2, first.TotalPages);
+        Assert.True(first.HasNext);
+
+        page.Page = 2;
+        var secondPage = await _claimsService.GetByPolicy(policyId, page);
+
+        Assert.Equal(100m, Assert.Single(secondPage.Items).Amount);
+        Assert.Equal(smallest, secondPage.Items[0].Id);
+        Assert.False(secondPage.HasNext);
     }
 }

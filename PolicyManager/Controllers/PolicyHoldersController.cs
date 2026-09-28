@@ -3,6 +3,7 @@ using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 using PolicyManager.Configuration;
 using PolicyManager.DTOs;
+using PolicyManager.Models.Enums;
 using PolicyManager.Services;
 
 namespace PolicyManager.Controllers;
@@ -22,7 +23,8 @@ namespace PolicyManager.Controllers;
 [Route("api/v{version:apiVersion}/[controller]")]
 [ApiVersion(ApiVersions.V1)]
 [Authorize(Policy = AuthorizationPolicies.AnyRole)]
-public class PolicyHoldersController(IPolicyHoldersService policyHoldersService) : ControllerBase
+public class PolicyHoldersController(IPolicyHoldersService policyHoldersService, IPoliciesService policiesService)
+    : ControllerBase
 {
     /// <summary>
     ///     Retrieves a page of policyholders.
@@ -57,6 +59,33 @@ public class PolicyHoldersController(IPolicyHoldersService policyHoldersService)
     {
         var holder = await policyHoldersService.GetById(id, cancellationToken);
         return holder == null ? NotFound() : Ok(holder);
+    }
+
+    /// <summary>
+    ///     Retrieves a page of the policies a single policyholder owns.
+    /// </summary>
+    /// <remarks>
+    ///     Supports <c>?page=</c>, <c>?pageSize=</c>, <c>?sortBy=</c>, <c>?descending=</c> and
+    ///     <c>?status=</c>, exactly as the unfiltered policies list does. A policyholder who owns
+    ///     nothing matching the filter returns an empty page; a policyholder who does not exist is a
+    ///     404.
+    /// </remarks>
+    /// <param name="id">The policyholder identifier.</param>
+    /// <param name="pagination">The requested page, page size and sort.</param>
+    /// <param name="status">Optional status filter for policies.</param>
+    /// <param name="cancellationToken">Token used to cancel the operation.</param>
+    /// <returns>A page of the policyholder's policies.</returns>
+    /// <response code="200">Returns the requested page of policies and the total matching count.</response>
+    /// <response code="404">policyholder not found.</response>
+    [HttpGet("{id:int}/policies")]
+    public async Task<ActionResult<PagedResult<PolicyDto>>> GetPolicies(
+        int id,
+        [FromQuery] PaginationQuery pagination,
+        [FromQuery] PolicyStatus? status,
+        CancellationToken cancellationToken)
+    {
+        var policies = await policiesService.GetByPolicyHolder(id, pagination, status, cancellationToken);
+        return Ok(policies);
     }
 
     /// <summary>

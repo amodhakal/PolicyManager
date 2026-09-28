@@ -30,13 +30,63 @@ public class PoliciesService(AppDbContext context, IBusinessNumberGenerator numb
     public async Task<PagedResult<PolicyDto>> GetAll(
         PaginationQuery pagination, PolicyStatus? status, CancellationToken cancellationToken = default)
     {
-        pagination.Normalize();
-
         var query = context.Policies.AsQueryable();
         if (status != null) query = query.Where(p => p.Status == status);
 
-        // Counted after the filter and before the ordering, so TotalCount describes the filtered set
-        // and the database is not asked to sort rows the page will discard.
+        return await PageAsync(query, pagination, cancellationToken);
+    }
+
+    /// <summary>
+    ///     Retrieves one page of the policies a single policyholder owns, optionally filtered by
+    ///     status, ordered, with the total count of that holder's whole filtered result set.
+    /// </summary>
+    /// <param name="policyHolderId">The policyholder identifier.</param>
+    /// <param name="pagination">The requested page, page size and sort. Normalized before use.</param>
+    /// <param name="status">Optional status filter.</param>
+    /// <param name="cancellationToken">Token used to cancel the operation.</param>
+    /// <returns>A page of the policyholder's policies. Empty when they own none that match.</returns>
+    /// <exception cref="Exceptions.NotFoundException">No policyholder has that identifier.</exception>
+    public async Task<PagedResult<PolicyDto>> GetByPolicyHolder(
+        int policyHolderId,
+        PaginationQuery pagination,
+        PolicyStatus? status = null,
+        CancellationToken cancellationToken = default)
+    {
+        // Distinguished from an empty page on purpose. A holder who owns nothing matching the filter
+        // and a holder who does not exist are different answers, and reporting them alike would tell a
+        // caller their policy book is empty when in fact they asked about the wrong holder.
+        if (!await context.PolicyHolders.AnyAsync(h => h.Id == policyHolderId, cancellationToken))
+            throw new NotFoundException("PolicyHolder", policyHolderId);
+
+        var query = context.Policies.Where(p => p.PolicyHolderId == policyHolderId);
+        if (status != null) query = query.Where(p => p.Status == status);
+
+        return await PageAsync(query, pagination, cancellationToken);
+    }
+
+    /// <summary>
+    ///     Applies the count, the ordering, the page slice and the projection to a policy query.
+    /// </summary>
+    /// <remarks>
+    ///     Shared by the unfiltered and the per-holder reads so both compose the paging the same way:
+    ///     counted after the filter and before the ordering, so <c>TotalCount</c> describes the
+    ///     filtered set and the database is not asked to sort rows the page will discard.
+    ///     <para>
+    ///         The projection fills every field of <see cref="PolicyDto" />. It previously left
+    ///         <c>PolicyHolderId</c>, <c>Type</c> and both dates at their defaults, so a caller could
+    ///         not tell which holder a policy belonged to or what it covered — and a search over one
+    ///         holder's policies returned rows that did not name that holder.
+    ///     </para>
+    /// </remarks>
+    /// <param name="query">The filtered policies to page over.</param>
+    /// <param name="pagination">The requested page, page size and sort. Normalized before use.</param>
+    /// <param name="cancellationToken">Token used to cancel the operation.</param>
+    /// <returns>The requested page of the query.</returns>
+    private async Task<PagedResult<PolicyDto>> PageAsync(
+        IQueryable<Policy> query, PaginationQuery pagination, CancellationToken cancellationToken)
+    {
+        pagination.Normalize();
+
         var totalCount = await query.CountAsync(cancellationToken);
 
         var items = await ApplySorting(query, pagination.SortBy, pagination.Descending)
@@ -49,7 +99,11 @@ public class PoliciesService(AppDbContext context, IBusinessNumberGenerator numb
                 Premium = p.Premium,
                 Status = p.Status,
                 PolicyholderName = $"{p.PolicyHolder.FirstName} {p.PolicyHolder.LastName}",
+                PolicyHolderId = p.PolicyHolderId,
+                Type = p.Type,
                 CoverageLimit = p.CoverageLimit,
+                StartDate = p.StartDate,
+                EndDate = p.EndDate,
                 UpdatedAt = p.UpdatedAt,
                 UpdatedBy = p.UpdatedBy,
                 RowVersion = ConcurrencyTokens.ToToken(p.RowVersion)
@@ -119,7 +173,11 @@ public class PoliciesService(AppDbContext context, IBusinessNumberGenerator numb
                 Premium = p.Premium,
                 Status = p.Status,
                 PolicyholderName = $"{p.PolicyHolder.FirstName} {p.PolicyHolder.LastName}",
+                PolicyHolderId = p.PolicyHolderId,
+                Type = p.Type,
                 CoverageLimit = p.CoverageLimit,
+                StartDate = p.StartDate,
+                EndDate = p.EndDate,
                 UpdatedAt = p.UpdatedAt,
                 UpdatedBy = p.UpdatedBy,
                 RowVersion = ConcurrencyTokens.ToToken(p.RowVersion)
