@@ -5,6 +5,7 @@ using DotNetEnv;
 using Microsoft.AspNetCore.Diagnostics.HealthChecks;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.DependencyInjection.Extensions;
+using Microsoft.Extensions.Diagnostics.HealthChecks;
 using PolicyManager.Configuration;
 using PolicyManager.Data;
 using PolicyManager.Errors;
