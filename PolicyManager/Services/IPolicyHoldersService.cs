@@ -50,11 +50,24 @@ public interface IPolicyHoldersService
     public Task Update(int id, UpdatePolicyHolderDto dto, CancellationToken cancellationToken = default);
 
     /// <summary>
-    ///     Deletes a policy holder who owns no policies.
+    ///     Soft-deletes a policy holder, keeping the row and hiding it from every read.
     /// </summary>
-    /// <exception cref="Exceptions.NotFoundException">The policy holder does not exist.</exception>
-    /// <exception cref="Exceptions.ConflictException">The policy holder still owns policies.</exception>
+    /// <remarks>
+    ///     The relationship from a policy to its holder cascades, so removing the holder outright would
+    ///     remove their policies and every claim filed against them. The row survives instead, which is
+    ///     what makes the removal reversible. The holder's policies stay in the book and keep naming
+    ///     them; the holder's own record is what disappears, and the address stays taken.
+    /// </remarks>
     /// <param name="id">The policy holder identifier.</param>
     /// <param name="cancellationToken">Token used to cancel the operation.</param>
+    /// <exception cref="Exceptions.NotFoundException">The policy holder does not exist.</exception>
     public Task Delete(int id, CancellationToken cancellationToken = default);
+
+    /// <summary>
+    ///     Restores a soft-deleted policy holder, making them visible to every read again.
+    /// </summary>
+    /// <param name="id">The policy holder identifier.</param>
+    /// <param name="cancellationToken">Token used to cancel the operation.</param>
+    /// <exception cref="Exceptions.NotFoundException">No policy holder has that identifier.</exception>
+    public Task Restore(int id, CancellationToken cancellationToken = default);
 }

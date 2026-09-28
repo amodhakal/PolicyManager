@@ -271,7 +271,8 @@ CI without needing a database. Note that CI only runs for pull requests whose **
 | `POST` | `/api/policyholders` | Create a policyholder; a duplicate email is a 409 |
 | `GET` | `/api/policyholders/{id}` | Get by ID |
 | `PUT` | `/api/policyholders/{id}` | Update `firstName`, `lastName` or `email`; omitted fields are left alone |
-| `DELETE` | `/api/policyholders/{id}` | Delete a holder who owns no policies; a holder with policies is a 409 |
+| `DELETE` | `/api/policyholders/{id}` | Soft delete; hides the holder, keeps the row and their policies |
+| `PATCH` | `/api/policyholders/{id}/restore` | Undo a soft delete; idempotent |
 
 ### Policies
 | Method | Route | Description |
@@ -289,7 +290,8 @@ CI without needing a database. Note that CI only runs for pull requests whose **
 | `POST` | `/api/claims` | File a claim against a policy |
 | `GET` | `/api/claims/{id}` | Get claim details |
 | `PATCH` | `/api/claims/{id}/status` | Adjudicate, approve or deny the claim |
-| `DELETE` | `/api/claims/{id}` | Delete a claim that has not been adjudicated; an approved or denied claim is a 409 |
+| `DELETE` | `/api/claims/{id}` | Soft delete a claim awaiting adjudication, hides it and keeps the row |
+| `PATCH` | `/api/claims/{id}/restore` | Undo a soft delete |
 
 ### Health
 | Method | Route | Description |
@@ -482,6 +484,40 @@ omitted field is a 400 rather than a silent default.
 cancelled policy to `Active`, because a non-nullable enum bound the omission to its zero member;
 omitting `premium` used to set it to `0`. A request that supplies neither is rejected as a no-op
 rather than reported as a success.
+
+---
+
+## Soft Deletes and Restore
+
+`DELETE` on a policyholder or a claim hides the record and keeps the row. `PATCH .../restore`
+brings it back. A restore is idempotent — restoring something that was never deleted succeeds
+and changes nothing — so a client that retries is not told it made a mistake.
+
+| Resource | Flag | On delete | On restore |
+|---|---|---|---|
+| Policyholders | `IsDeleted`, `DeletionDate` | Hidden from every read | Visible again, cache entry evicted |
+| Claims | `IsDeleted`, `DeletionDate` | Hidden from every read, and its amount stops reserving coverage | Visible again, and its amount reserves coverage again |
+| Policies | — | Status set to `Cancelled` | Not offered; a cancelled policy is a business state, not a deletion |
+
+**Why the row survives.** The foreign key from a policy to its holder cascades, and the one from
+a claim to its policy cascades in turn, so removing a holder outright would take their policies
+and every claim ever filed against them with it. Keeping the row is what makes the removal
+reversible, and it is why a hard delete of a holder with claim history is not available at all.
+
+Two consequences worth knowing:
+
+- **Deleting a holder hides the holder, not their book.** Their policies stay in the policy list
+  and in the reports, still named after them; the holder is a 404 only where they are addressed
+  directly. This is also why the read filter is applied per query rather than globally on the
+  entity: a global filter on `PolicyHolders` would leave the holder's name null on every one of
+  those policies.
+- **A deleted holder's email address stays taken.** The unique index still covers the row, so
+  the address cannot be registered to somebody else while it exists, and a restore can therefore
+  never collide.
+
+An **adjudicated** claim still cannot be deleted, soft or otherwise: an approved or denied claim
+records who decided it, when, and why, and hiding it would take that record out of the book while
+leaving the payout it settled in place. `DELETE` on one answers **409**.
 
 ---
 

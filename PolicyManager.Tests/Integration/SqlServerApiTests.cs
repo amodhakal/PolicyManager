@@ -1,5 +1,6 @@
 using System.Net;
 using System.Net.Http.Json;
+using Microsoft.EntityFrameworkCore;
 using PolicyManager.DTOs;
 using PolicyManager.Tests.Infrastructure;
 
@@ -153,14 +154,15 @@ public class SqlServerApiTests : SqlServerTestBase, IAsyncLifetime
     }
 
     /// <summary>
-    ///     A holder whose policy carries claims is refused, so the cascade never reaches the claims.
+    ///     A holder whose policy carries claims can be soft-deleted, and the claims are still there
+    ///     afterwards.
     /// </summary>
     /// <remarks>
-    ///     Needs SQL Server: this is the case where the cascade would actually destroy rows, so the
-    ///     guard is only meaningful where the cascade exists.
+    ///     Needs SQL Server: this is the case the cascade would have destroyed, so the guard is only
+    ///     meaningful where the cascade exists.
     /// </remarks>
     [Fact]
-    public async Task Deleting_a_holder_with_claimed_policies_is_refused_by_sql_server()
+    public async Task Deleting_a_holder_with_claimed_policies_leaves_the_claims_in_sql_server()
     {
         var holderId = await CreateHolderAsync("Barbara", "Liskov", "barbara@example.com");
 
@@ -186,11 +188,16 @@ public class SqlServerApiTests : SqlServerTestBase, IAsyncLifetime
 
         var response = await Client.DeleteAsync($"/api/policyholders/{holderId}");
 
-        Assert.Equal(HttpStatusCode.Conflict, response.StatusCode);
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
 
-        // The policy and the claim behind it are all still there.
+        // The holder is hidden, and the policy and the claim behind it are untouched.
+        Assert.Equal(HttpStatusCode.NotFound, (await Client.GetAsync($"/api/policyholders/{holderId}")).StatusCode);
         Assert.Equal(HttpStatusCode.OK, (await Client.GetAsync($"/api/policies/{policy.Id}")).StatusCode);
         Assert.Equal(HttpStatusCode.OK, (await Client.GetAsync($"/api/claims/{claim!.Id}")).StatusCode);
+
+        await using var context = CreateContext();
+        var stillThere = await context.Claims.SingleAsync(c => c.Id == claim.Id);
+        Assert.False(stillThere.IsDeleted);
     }
 
     /// <summary>
@@ -257,6 +264,91 @@ public class SqlServerApiTests : SqlServerTestBase, IAsyncLifetime
         Assert.Equal(0.4m, row.ClaimsRatio);
         Assert.Equal("Margaret Hamilton", row.PolicyholderName);
         Assert.NotNull(home);
+    }
+
+    /// <summary>
+    ///     A soft-deleted holder and claim keep their rows in the migrated schema, and a restore brings
+    ///     them back.
+    /// </summary>
+    /// <remarks>
+    ///     Needs SQL Server for two reasons the in-memory provider cannot answer: the migration has to
+    ///     apply, and the soft delete has to be checked against the table rather than against a
+    ///     change-tracker view. The policies of a deleted holder also have to keep resolving the
+    ///     holder's name, which is why the read filter is applied per query rather than globally.
+    /// </remarks>
+    [Fact]
+    public async Task Soft_delete_keeps_the_rows_and_restore_brings_them_back()
+    {
+        var holderId = await CreateHolderAsync("Katherine", "Johnson", "katherine@example.com");
+
+        var policyResponse = await Client.PostAsJsonAsync("/api/policies", new CreatePolicyDto
+        {
+            PolicyHolderId = holderId, Premium = 600m, Type = Models.Enums.PolicyType.Home,
+            CoverageLimit = 2000m, StartDate = new DateTime(2026, 3, 1), EndDate = new DateTime(2027, 3, 1)
+        });
+
+        var policy = (await policyResponse.Content.ReadFromJsonAsync<PolicyDto>())!;
+
+        var claimResponse = await Client.PostAsJsonAsync("/api/claims", new CreateClaimDto
+        {
+            PolicyId = policy.Id, Amount = 300m, Description = "Flood damage"
+        });
+
+        var claim = (await claimResponse.Content.ReadFromJsonAsync<ClaimDto>())!;
+
+        Assert.Equal(HttpStatusCode.OK, (await Client.DeleteAsync($"/api/policyholders/{holderId}")).StatusCode);
+        Assert.Equal(HttpStatusCode.OK, (await Client.DeleteAsync($"/api/claims/{claim.Id}")).StatusCode);
+
+        await using (var context = CreateContext())
+        {
+            var storedHolder = await context.PolicyHolders
+                .IgnoreQueryFilters().SingleAsync(h => h.Id == holderId);
+            Assert.True(storedHolder.IsDeleted);
+            Assert.NotNull(storedHolder.DeletionDate);
+
+            var storedClaim = await context.Claims.IgnoreQueryFilters().SingleAsync(c => c.Id == claim.Id);
+            Assert.True(storedClaim.IsDeleted);
+            Assert.NotNull(storedClaim.DeletionDate);
+        }
+
+        // Neither is visible through the API any more.
+        Assert.Equal(HttpStatusCode.NotFound, (await Client.GetAsync($"/api/policyholders/{holderId}")).StatusCode);
+        Assert.Equal(HttpStatusCode.NotFound, (await Client.GetAsync($"/api/claims/{claim.Id}")).StatusCode);
+
+        // The policy is still in the book and still names its holder: only the holder's own record was
+        // hidden. This is the case a global filter on PolicyHolders would have broken.
+        var stillReadable = await (await Client.GetAsync($"/api/policies/{policy.Id}")).Content
+            .ReadFromJsonAsync<PolicyDto>();
+        Assert.Equal("Katherine Johnson", stillReadable!.PolicyholderName);
+        Assert.Equal(holderId, stillReadable.PolicyHolderId);
+
+        // The hidden claim has released its coverage, so the full limit is available again.
+        var secondClaim = await Client.PostAsJsonAsync("/api/claims", new CreateClaimDto
+        {
+            PolicyId = policy.Id, Amount = 1700m, Description = "Roof and contents"
+        });
+        Assert.Equal(HttpStatusCode.Created, secondClaim.StatusCode);
+
+        Assert.Equal(
+            HttpStatusCode.OK,
+            (await Client.PatchAsync($"/api/policyholders/{holderId}/restore", null)).StatusCode);
+        Assert.Equal(
+            HttpStatusCode.OK,
+            (await Client.PatchAsync($"/api/claims/{claim.Id}/restore", null)).StatusCode);
+
+        Assert.Equal(HttpStatusCode.OK, (await Client.GetAsync($"/api/policyholders/{holderId}")).StatusCode);
+
+        var restoredClaim = await (await Client.GetAsync($"/api/claims/{claim.Id}")).Content
+            .ReadFromJsonAsync<ClaimDto>();
+        Assert.Equal(300m, restoredClaim!.Amount);
+        Assert.Equal(Models.Enums.ClaimStatus.Pending, restoredClaim.Status);
+
+        await using (var context = CreateContext())
+        {
+            var restoredHolder = await context.PolicyHolders.SingleAsync(h => h.Id == holderId);
+            Assert.False(restoredHolder.IsDeleted);
+            Assert.Null(restoredHolder.DeletionDate);
+        }
     }
 
     private async Task<int> CreateHolderAsync(string first, string last, string email)

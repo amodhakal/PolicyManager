@@ -181,6 +181,82 @@ public class ReportsControllerTests : ApiIntegrationTestBase
     }
 
     /// <summary>
+    ///     A soft-deleted claim leaves the open-claims report, because the report counts what the API
+    ///     can still see.
+    /// </summary>
+    [Fact]
+    public async Task GetOpenClaimsByStatus_IgnoresSoftDeletedClaims()
+    {
+        var policyId = await SeedPolicyForNewHolderAsync();
+        var hidden = await SeedClaimAsync(policyId, 900m);
+        await SeedClaimAsync(policyId, 100m);
+
+        await Client.DeleteAsync($"/api/claims/{hidden}");
+
+        var report = await (await Client.GetAsync("/api/reports/open-claims-by-status")).Content
+            .ReadFromJsonAsync<OpenClaimsByStatusReportDto>();
+
+        Assert.Equal(1, report!.TotalOpenClaims);
+        Assert.Equal(100m, report.TotalOpenAmount);
+
+        await Client.PatchAsync($"/api/claims/{hidden}/restore", null);
+
+        var restored = await (await Client.GetAsync("/api/reports/open-claims-by-status")).Content
+            .ReadFromJsonAsync<OpenClaimsByStatusReportDto>();
+
+        Assert.Equal(2, restored!.TotalOpenClaims);
+        Assert.Equal(1000m, restored.TotalOpenAmount);
+    }
+
+    /// <summary>
+    ///     A soft-deleted claim stops weighing on its holder's ratio, and comes back with it.
+    /// </summary>
+    [Fact]
+    public async Task GetClaimsRatioPerHolder_IgnoresSoftDeletedClaims()
+    {
+        var holderId = await SeedHolderAsync();
+        await SeedPolicyAsync(holderId, 1000m);
+        var hidden = await SeedClaimAsync(await PolicyOfAsync(holderId), 400m);
+        await SeedClaimAsync(await PolicyOfAsync(holderId), 100m);
+
+        await Client.DeleteAsync($"/api/claims/{hidden}");
+
+        var page = await (await Client.GetAsync("/api/reports/claims-ratio-per-holder")).Content
+            .ReadFromJsonAsync<PagedResult<HolderClaimsRatioDto>>();
+
+        Assert.Equal(0.1m, Assert.Single(page!.Items).ClaimsRatio);
+
+        await Client.PatchAsync($"/api/claims/{hidden}/restore", null);
+
+        var restored = await (await Client.GetAsync("/api/reports/claims-ratio-per-holder")).Content
+            .ReadFromJsonAsync<PagedResult<HolderClaimsRatioDto>>();
+
+        Assert.Equal(0.5m, Assert.Single(restored!.Items).ClaimsRatio);
+    }
+
+    /// <summary>
+    ///     A soft-deleted policyholder's policies stay in the report, still named after them: only the
+    ///     holder's own record is hidden.
+    /// </summary>
+    [Fact]
+    public async Task GetClaimsRatioPerHolder_KeepsDeletedHoldersPoliciesNamed()
+    {
+        var holderId = await SeedHolderAsync();
+        await SeedPolicyAsync(holderId, 1000m);
+        await SeedClaimAsync(await PolicyOfAsync(holderId), 250m);
+
+        await Client.DeleteAsync($"/api/policyholders/{holderId}");
+
+        var page = await (await Client.GetAsync("/api/reports/claims-ratio-per-holder")).Content
+            .ReadFromJsonAsync<PagedResult<HolderClaimsRatioDto>>();
+
+        var row = Assert.Single(page!.Items);
+        Assert.Equal(holderId, row.PolicyHolderId);
+        Assert.Equal("Jane Doe", row.PolicyholderName);
+        Assert.Equal(0.25m, row.ClaimsRatio);
+    }
+
+    /// <summary>
     ///     A holder's single policy is read back so a claim can be filed against it, since the
     ///     seeding helpers create a policy but do not return which one when a holder owns more.
     /// </summary>

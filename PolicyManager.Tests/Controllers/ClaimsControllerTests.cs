@@ -162,10 +162,11 @@ public class ClaimsControllerTests : ApiIntegrationTestBase
 
         Assert.Equal(HttpStatusCode.NotFound, res.StatusCode);
     }    ///     Deleting a claim awaiting adjudication removes it, so a later read is a 404 and the list no
+    ///     Deleting a claim awaiting adjudication hides it, so a later read is a 404 and the list no
     ///     longer counts it.
     /// </summary>
     [Fact]
-    public async Task Delete_PendingClaim_RemovesIt()
+    public async Task Delete_PendingClaim_HidesIt()
     {
         var policyId = await SeedPolicyForNewHolderAsync();
         var claimId = await SeedClaimAsync(policyId);
@@ -180,6 +181,73 @@ public class ClaimsControllerTests : ApiIntegrationTestBase
             .ReadFromJsonAsync<PagedResult<ClaimDto>>();
         Assert.Single(remaining!.Items);
         Assert.Equal(1, remaining.TotalCount);
+    }
+
+    /// <summary>
+    ///     A hidden claim also drops out of its policy's claim search.
+    /// </summary>
+    [Fact]
+    public async Task Delete_HidesTheClaimFromItsPolicySearch()
+    {
+        var policyId = await SeedPolicyForNewHolderAsync();
+        var hidden = await SeedClaimAsync(policyId, 100m);
+        await SeedClaimAsync(policyId, 200m);
+
+        await Client.DeleteAsync($"/api/claims/{hidden}");
+
+        var page = await (await Client.GetAsync($"/api/policies/{policyId}/claims")).Content
+            .ReadFromJsonAsync<PagedResult<ClaimDto>>();
+        Assert.Equal(1, page!.TotalCount);
+        Assert.Equal(200m, Assert.Single(page.Items).Amount);
+    }
+
+    /// <summary>
+    ///     A restore brings a hidden claim back, on its own and through its policy.
+    /// </summary>
+    [Fact]
+    public async Task Restore_BringsTheClaimBack()
+    {
+        var policyId = await SeedPolicyForNewHolderAsync();
+        var claimId = await SeedClaimAsync(policyId, 300m);
+        await Client.DeleteAsync($"/api/claims/{claimId}");
+
+        var res = await Client.PatchAsync($"/api/claims/{claimId}/restore", null);
+        Assert.Equal(HttpStatusCode.OK, res.StatusCode);
+
+        var claim = await res.Content.ReadFromJsonAsync<ClaimDto>();
+        Assert.Equal(claimId, claim!.Id);
+        Assert.Equal(300m, claim.Amount);
+        Assert.Equal(ClaimStatus.Pending, claim.Status);
+
+        Assert.Equal(HttpStatusCode.OK, (await Client.GetAsync($"/api/claims/{claimId}")).StatusCode);
+
+        var page = await (await Client.GetAsync($"/api/policies/{policyId}/claims")).Content
+            .ReadFromJsonAsync<PagedResult<ClaimDto>>();
+        Assert.Equal(1, page!.TotalCount);
+    }
+
+    /// <summary>
+    ///     Restoring a claim that was never deleted succeeds: the call is idempotent.
+    /// </summary>
+    [Fact]
+    public async Task Restore_OfAnActiveClaim_Returns200()
+    {
+        var policyId = await SeedPolicyForNewHolderAsync();
+        var claimId = await SeedClaimAsync(policyId);
+
+        var res = await Client.PatchAsync($"/api/claims/{claimId}/restore", null);
+
+        Assert.Equal(HttpStatusCode.OK, res.StatusCode);
+    }
+
+    /// <summary>
+    ///     Restoring an identifier nobody holds is a 404.
+    /// </summary>
+    [Fact]
+    public async Task Restore_NonExistentClaim_Returns404()
+    {
+        var res = await Client.PatchAsync("/api/claims/99999/restore", null);
+        Assert.Equal(HttpStatusCode.NotFound, res.StatusCode);
     }
 
     /// <summary>

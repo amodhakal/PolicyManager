@@ -52,16 +52,24 @@ public class PolicyHoldersService(
     {
         pagination.Normalize();
 
+        // Both the count and the page are taken from the undeleted holders, so a soft delete shrinks
+        // the result set rather than leaving a hole in it.
+        var active = ActiveHolders();
+
         // Counted on the un-ordered, un-paged set: the count is the same either way, and letting the
         // database pick the plan for a bare COUNT is cheaper than ordering rows it will then discard.
-        var totalCount = await context.PolicyHolders.CountAsync(cancellationToken);
+        var totalCount = await active.CountAsync(cancellationToken);
 
         var mayDisclose = pii.MayDisclose();
 
         // Decryption happens in the value converter, on the way out of the database, so a projection
         // cannot accidentally bypass it. Masking happens after that, here, and only for callers not
         // entitled to the address.
-        var items = await ApplySorting(context.PolicyHolders, pagination.SortBy, pagination.Descending)
+        //
+        // Ordering happens on the entity query and the projection to the DTO happens after Skip/Take,
+        // so the database applies the sort and the offset rather than materializing every holder to
+        // slice in memory.
+        var items = await ApplySorting(active, pagination.SortBy, pagination.Descending)
             .Skip((pagination.Page - 1) * pagination.PageSize)
             .Take(pagination.PageSize)
             .Select(h => new PolicyHolderDto
@@ -87,6 +95,18 @@ public class PolicyHoldersService(
 
         return PagedResult<PolicyHolderDto>.Create(items, totalCount, pagination.Page, pagination.PageSize);
     }
+
+    /// <summary>
+    ///     The policyholders a caller may see: everything that has not been soft-deleted.
+    /// </summary>
+    /// <remarks>
+    ///     Applied here rather than as a global query filter on the entity, because a policy projects
+    ///     its holder's name and a global filter would leave that name null for the policies of a
+    ///     deleted holder. Those policies stay in the book, so the holder behind them is still named;
+    ///     only the holder's own record disappears.
+    /// </remarks>
+    /// <returns>The undeleted policyholders.</returns>
+    private IQueryable<PolicyHolder> ActiveHolders() => context.PolicyHolders.Where(h => !h.IsDeleted);
 
     /// <summary>
     ///     Orders the policyholder query by the requested field.
@@ -147,7 +167,7 @@ public class PolicyHoldersService(
         var key = CacheKeys.ById(id, generations.Current(id));
         if (cache.TryGetValue(key, out PolicyHolderDto? cached)) return cached;
 
-        var holder = await context.PolicyHolders.Where(p => p.Id == id)
+        var holder = await ActiveHolders().Where(p => p.Id == id)
             .Select(p => new PolicyHolderDto
             {
                 Id = p.Id,
@@ -295,38 +315,70 @@ public class PolicyHoldersService(
     }
 
     /// <summary>
-    ///     Deletes a policyholder who owns no policies, and records an outbox message transactionally.
+    ///     Soft-deletes a policyholder, keeping the row and hiding it from every read.
     /// </summary>
     /// <remarks>
-    ///     Policies are refused rather than removed. A claim is a financial record carrying the
-    ///     adjudication trail, and the foreign keys restrict for exactly that reason: a holder with
-    ///     claims could never be deleted without destroying them. Rejecting a holder who merely has
-    ///     policies is the same rule one step earlier - it keeps the caller from discovering it as an
-    ///     opaque constraint violation, and it gives them the choice the API already offers for a
-    ///     policy, which is to cancel it.
+    ///     The row survives, and that is the whole point of the soft delete. The relationship from a
+    ///     policy to its holder cascades, so removing the holder outright would remove their policies
+    ///     and, through them, every claim ever filed against them. A claim is a financial record
+    ///     carrying the adjudication trail, so that history is kept and only the holder's own record
+    ///     is hidden. <see cref="Restore" /> brings it back.
+    ///     <para>
+    ///         Their policies stay in the book and keep naming them: the policies remain visible in
+    ///         the policy list and the reports, while the holder is a 404 wherever they are addressed
+    ///         directly. The address also stays taken, because the unique index still covers the row,
+    ///         which in turn means a restore can never collide.
+    ///     </para>
     /// </remarks>
     /// <param name="id">The policyholder identifier.</param>
     /// <param name="cancellationToken">Token used to cancel the operation.</param>
     /// <exception cref="NotFoundException">The policyholder does not exist.</exception>
-    /// <exception cref="ConflictException">The policyholder still owns policies.</exception>
     public async Task Delete(int id, CancellationToken cancellationToken = default)
     {
         var holder = await context.PolicyHolders.FindAsync([id], cancellationToken)
             ?? throw new NotFoundException("PolicyHolder", id);
 
-        var policyCount = await context.Policies.CountAsync(p => p.PolicyHolderId == id, cancellationToken);
-        if (policyCount > 0)
-        {
-            throw new ConflictException(
-                $"Policyholder '{id}' still owns {policyCount} policy/policies. Cancel them before deleting the holder.");
-        }
+        if (holder.IsDeleted) return;
 
-        context.Remove(holder);
+        holder.IsDeleted = true;
+        holder.DeletionDate = DateTime.UtcNow;
 
         await context.SaveWithOutboxAsync(
             holder,
             "PolicyHolderDeleted",
-            h => new { h.Id, h.FirstName, h.LastName, h.Email },
+            h => new { h.Id, h.Email, h.DeletionDate },
+            cancellationToken);
+
+        generations.Advance(id);
+    }
+
+    /// <summary>
+    ///     Restores a soft-deleted policyholder, making them visible to every read again.
+    /// </summary>
+    /// <remarks>
+    ///     Idempotent: restoring a holder who was never deleted changes nothing, publishes no outbox
+    ///     message and still succeeds. The query reaches past the read filter on deleted holders,
+    ///     because that filter is the very thing being undone.
+    /// </remarks>
+    /// <param name="id">The policyholder identifier.</param>
+    /// <param name="cancellationToken">Token used to cancel the operation.</param>
+    /// <exception cref="NotFoundException">No policyholder has that identifier, deleted or not.</exception>
+    public async Task Restore(int id, CancellationToken cancellationToken = default)
+    {
+        var holder = await context.PolicyHolders
+            .IgnoreQueryFilters()
+            .FirstOrDefaultAsync(h => h.Id == id, cancellationToken)
+            ?? throw new NotFoundException("PolicyHolder", id);
+
+        if (!holder.IsDeleted) return;
+
+        holder.IsDeleted = false;
+        holder.DeletionDate = null;
+
+        await context.SaveWithOutboxAsync(
+            holder,
+            "PolicyHolderRestored",
+            h => new { h.Id, h.Email },
             cancellationToken);
 
         generations.Advance(id);

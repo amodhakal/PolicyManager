@@ -187,11 +187,21 @@ public class PolicyHoldersControllerTests : ApiIntegrationTestBase
         Assert.Equal(HttpStatusCode.Conflict, res.StatusCode);
     }
 
+    public async Task Update_MalformedEmail_Returns400()
+    {
+        var id = await SeedHolderAsync(_createPolicyHolderDto);
+
+        var res = await Client.PutAsJsonAsync($"/api/policyholders/{id}",
+            new UpdatePolicyHolderDto { Email = "not-an-email" });
+
+        Assert.Equal(HttpStatusCode.BadRequest, res.StatusCode);
+    }
+
     /// <summary>
-    ///     Deleting a holder who owns nothing removes them.
+    ///     Deleting a holder hides them, so a later read and the list both no longer show them.
     /// </summary>
     [Fact]
-    public async Task Delete_UnattachedHolder_Returns200AndRemovesThem()
+    public async Task Delete_ExistingHolder_HidesThem()
     {
         var id = await SeedHolderAsync(_createPolicyHolderDto);
 
@@ -200,6 +210,12 @@ public class PolicyHoldersControllerTests : ApiIntegrationTestBase
 
         var get = await Client.GetAsync($"/api/policyholders/{id}");
         Assert.Equal(HttpStatusCode.NotFound, get.StatusCode);
+        Assert.Equal(HttpStatusCode.NotFound, (await Client.GetAsync($"/api/policyholders/{id}")).StatusCode);
+
+        var list = await (await Client.GetAsync("/api/policyholders")).Content
+            .ReadFromJsonAsync<PagedResult<PolicyHolderDto>>();
+        Assert.Empty(list!.Items);
+        Assert.Equal(0, list.TotalCount);
     }
 
     /// <summary>
@@ -213,24 +229,98 @@ public class PolicyHoldersControllerTests : ApiIntegrationTestBase
     }
 
     /// <summary>
-    ///     Deleting a holder who still has policies is refused, and the policies survive.
+    ///     Deleting a holder who still has policies hides the holder and leaves the book alone.
     /// </summary>
     /// <remarks>
     ///     The claims filed against those policies are financial records carrying the adjudication
-    ///     trail, so the endpoint refuses the delete rather than removing the holder's history with
-    ///     them.
+    ///     trail, so a delete that removed them would take the holder's history with it. Nothing
+    ///     cascades here, which is what makes the removal reversible.
     /// </remarks>
     [Fact]
-    public async Task Delete_HolderWithPolicies_Returns409AndKeepsThePolicies()
+    public async Task Delete_HolderWithPolicies_HidesTheHolderAndKeepsTheBook()
     {
         var holderId = await SeedHolderAsync(_createPolicyHolderDto);
         var policyId = await SeedPolicyAsync(holderId);
+        var claimId = await SeedClaimAsync(policyId);
 
         var res = await Client.DeleteAsync($"/api/policyholders/{holderId}");
-        Assert.Equal(HttpStatusCode.Conflict, res.StatusCode);
+        Assert.Equal(HttpStatusCode.OK, res.StatusCode);
 
         var get = await Client.GetAsync($"/api/policies/{policyId}");
         Assert.Equal(HttpStatusCode.OK, get.StatusCode);
+        // The holder is gone as far as the API is concerned...
+        Assert.Equal(HttpStatusCode.NotFound, (await Client.GetAsync($"/api/policyholders/{holderId}")).StatusCode);
+        Assert.Equal(HttpStatusCode.NotFound, (await Client.GetAsync($"/api/policyholders/{holderId}/policies")).StatusCode);
+
+        // ...while the business they wrote stays in the book, still naming them.
+        Assert.Equal(HttpStatusCode.OK, (await Client.GetAsync($"/api/policies/{policyId}")).StatusCode);
+        Assert.Equal(HttpStatusCode.OK, (await Client.GetAsync($"/api/claims/{claimId}")).StatusCode);
+    }
+
+    /// <summary>
+    ///     A restore brings the holder back, and the policies addressed through them again.
+    /// </summary>
+    [Fact]
+    public async Task Restore_BringsTheHolderBack()
+    {
+        var id = await SeedHolderAsync(_createPolicyHolderDto);
+        await Client.DeleteAsync($"/api/policyholders/{id}");
+
+        var res = await Client.PatchAsync($"/api/policyholders/{id}/restore", null);
+        Assert.Equal(HttpStatusCode.OK, res.StatusCode);
+
+        var holder = await res.Content.ReadFromJsonAsync<PolicyHolderDto>();
+        Assert.Equal(id, holder!.Id);
+        Assert.Equal(_createPolicyHolderDto.Email, holder.Email);
+
+        var fetched = await Client.GetAsync($"/api/policyholders/{id}");
+        Assert.Equal(HttpStatusCode.OK, fetched.StatusCode);
+    }
+
+    /// <summary>
+    ///     A holder's policy search answers again once they are restored.
+    /// </summary>
+    [Fact]
+    public async Task Restore_MakesTheirPolicySearchAnswerAgain()
+    {
+        var id = await SeedHolderAsync(_createPolicyHolderDto);
+        var policyId = await SeedPolicyAsync(id);
+
+        await Client.DeleteAsync($"/api/policyholders/{id}");
+        Assert.Equal(
+            HttpStatusCode.NotFound,
+            (await Client.GetAsync($"/api/policyholders/{id}/policies")).StatusCode);
+
+        await Client.PatchAsync($"/api/policyholders/{id}/restore", null);
+
+        var page = await (await Client.GetAsync($"/api/policyholders/{id}/policies")).Content
+            .ReadFromJsonAsync<PagedResult<PolicyDto>>();
+        Assert.Equal(1, page!.TotalCount);
+        Assert.Equal(policyId, Assert.Single(page.Items).Id);
+    }
+
+    /// <summary>
+    ///     Restoring a holder who was never deleted succeeds: the call is idempotent, so a client
+    ///     that retries is not told it made a mistake.
+    /// </summary>
+    [Fact]
+    public async Task Restore_OfAnActiveHolder_Returns200()
+    {
+        var id = await SeedHolderAsync(_createPolicyHolderDto);
+
+        var res = await Client.PatchAsync($"/api/policyholders/{id}/restore", null);
+
+        Assert.Equal(HttpStatusCode.OK, res.StatusCode);
+    }
+
+    /// <summary>
+    ///     Restoring an identifier nobody holds is a 404.
+    /// </summary>
+    [Fact]
+    public async Task Restore_NonExistentHolder_Returns404()
+    {
+        var res = await Client.PatchAsync("/api/policyholders/99999/restore", null);
+        Assert.Equal(HttpStatusCode.NotFound, res.StatusCode);
     }
 
     /// <summary>

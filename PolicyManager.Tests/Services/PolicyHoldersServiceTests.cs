@@ -160,10 +160,14 @@ public class PolicyHoldersServiceTests : ServiceTestBase
     }
 
     /// <summary>
-    ///     Verifies that an update and the delete record their outbox messages.
+    ///     A deleted holder is hidden from every read, while the row stays in the table.
     /// </summary>
+    /// <remarks>
+    ///     The row has to survive: the foreign key from policy to holder cascades, so removing the row
+    ///     would take their policies and every claim filed against them with it.
+    /// </remarks>
     [Fact]
-    public async Task Update_AndDelete_WriteOutboxMessages()
+    public async Task Delete_HidesTheHolderButKeepsTheRow()
     {
         var id = await SeedHolder("Jane", "Doe", "jane@example.com");
 
@@ -176,16 +180,20 @@ public class PolicyHoldersServiceTests : ServiceTestBase
     }
 
     /// <summary>
-    ///     Verifies that deleting an unattached holder removes it.
+    ///     Deleting a holder who owns nothing still keeps the row, because the row is the only thing
+    ///     that makes the delete reversible.
     /// </summary>
     [Fact]
-    public async Task Delete_UnattachedHolder_RemovesTheRow()
+    public async Task Delete_UnattachedHolder_KeepsTheRow()
     {
         var id = await SeedHolder("Jane", "Doe", "jane@example.com");
 
         await _policyHoldersService.Delete(id);
 
-        Assert.Empty(await Context.PolicyHolders.ToListAsync());
+        var holder = await Context.PolicyHolders.SingleAsync();
+        Assert.True(holder.IsDeleted);
+        Assert.NotNull(holder.DeletionDate);
+        Assert.Null(await _policyHoldersService.GetById(id));
     }
 
     /// <summary>
@@ -195,31 +203,6 @@ public class PolicyHoldersServiceTests : ServiceTestBase
     public async Task Delete_NonExistentId_ThrowsNotFound()
     {
         await Assert.ThrowsAsync<NotFoundException>(() => _policyHoldersService.Delete(99999));
-    }
-
-    /// <summary>
-    ///     Verifies that a holder who still owns policies is refused, and that the policies are kept.
-    /// </summary>
-    /// <remarks>
-    ///     The alternative is the cascade the foreign keys now prevent: the policies, and every claim
-    ///     filed under them, would go with the holder as a side effect of removing a contact record.
-    /// </remarks>
-    [Fact]
-    public async Task Delete_HolderStillOwningPolicies_ThrowsConflictAndKeepsEverything()
-    {
-        var holderId = await SeedHolder("Jane", "Doe", "jane@example.com");
-        var policiesService = new PoliciesService(Context, Numbers);
-        var policyId = await policiesService.Create(new CreatePolicyDto
-        {
-            Type = PolicyType.Auto, PolicyHolderId = holderId, Premium = 500m,
-            StartDate = new DateTime(2026, 1, 1), EndDate = new DateTime(2027, 1, 1)
-        });
-
-        await Assert.ThrowsAsync<ConflictException>(() => _policyHoldersService.Delete(holderId));
-
-        Assert.Single(await Context.PolicyHolders.ToListAsync());
-        Assert.Single(await Context.Policies.ToListAsync());
-        Assert.Equal(policyId, (await Context.Policies.SingleAsync()).Id);
     }
 
     /// <summary>
@@ -270,6 +253,10 @@ public class PolicyHoldersServiceTests : ServiceTestBase
         _cache.Set(CacheKeys.ById(id, generationBeforeDelete), rowReadBeforeDelete);
 
         Assert.Null(await _policyHoldersService.GetById(id));
+
+        var row = await Context.PolicyHolders.IgnoreQueryFilters().SingleAsync(h => h.Id == id);
+        Assert.True(row.IsDeleted);
+        Assert.NotNull(row.DeletionDate);
     }
 
     /// <summary>
@@ -293,6 +280,162 @@ public class PolicyHoldersServiceTests : ServiceTestBase
         var reread = await _policyHoldersService.GetById(id);
 
         Assert.Equal("Smith", reread!.LastName);
+    }
+
+    /// <summary>
+    ///     A deleted holder drops out of the list, and the count describes the holders a caller can
+    ///     still see.
+    /// </summary>
+    [Fact]
+    public async Task Delete_RemovesTheHolderFromTheList()
+    {
+        var deleted = await SeedHolder("Ann", "Able", "ann@test.com");
+        await SeedHolder("Bob", "Baker", "bob@test.com");
+
+        await _policyHoldersService.Delete(deleted);
+
+        var page = await _policyHoldersService.GetAll(new PaginationQuery());
+
+        Assert.Equal(1, page.TotalCount);
+        Assert.Equal("Baker", Assert.Single(page.Items).LastName);
+    }
+
+    /// <summary>
+    ///     A deleted holder's policies and claims are left alone: only the holder's own record is
+    ///     hidden, and their book of business stays in place.
+    /// </summary>
+    [Fact]
+    public async Task Delete_LeavesTheHoldersPoliciesAndClaimsInPlace()
+    {
+        var holder = await SeedHolderEntityAsync("John", "Smith", "js@test.com");
+
+        var policy = new Policy
+        {
+            PolicyHolderId = holder.Id, Premium = 500m, Status = PolicyStatus.Active,
+            Type = PolicyType.Auto, StartDate = new DateTime(2026, 1, 1), EndDate = new DateTime(2027, 1, 1)
+        };
+
+        Context.Policies.Add(policy);
+        await Context.SaveChangesAsync();
+
+        Context.Claims.Add(new Claim { PolicyId = policy.Id, Amount = 100m });
+        await Context.SaveChangesAsync();
+
+        await _policyHoldersService.Delete(holder.Id);
+
+        Assert.NotNull(await Context.Policies.FindAsync(policy.Id));
+        Assert.Single(await Context.Claims.ToListAsync());
+    }
+
+    /// <summary>
+    ///     A restore brings a deleted holder back, unchanged in every other respect.
+    /// </summary>
+    [Fact]
+    public async Task Restore_BringsTheHolderBack()
+    {
+        var id = await SeedHolder("John", "Smith", "js@test.com");
+        await _policyHoldersService.Delete(id);
+
+        await _policyHoldersService.Restore(id);
+
+        var holder = await _policyHoldersService.GetById(id);
+        Assert.Equal("John", holder!.FirstName);
+        Assert.Equal("js@test.com", holder.Email);
+
+        var row = await Context.PolicyHolders.SingleAsync(h => h.Id == id);
+        Assert.False(row.IsDeleted);
+        Assert.Null(row.DeletionDate);
+    }
+
+    /// <summary>
+    ///     Restoring a holder who was never deleted succeeds and changes nothing, so a client that
+    ///     retries does not get an error for a state it has already reached.
+    /// </summary>
+    [Fact]
+    public async Task Restore_OfAnActiveHolder_ChangesNothing()
+    {
+        var id = await SeedHolder("John", "Smith", "js@test.com");
+
+        await _policyHoldersService.Restore(id);
+
+        var row = await Context.PolicyHolders.SingleAsync(h => h.Id == id);
+        Assert.False(row.IsDeleted);
+        Assert.Null(row.DeletionDate);
+        Assert.Single(await Context.OutboxMessages.ToListAsync());
+    }
+
+    /// <summary>
+    ///     A restore of an identifier nobody holds is a 404, like every other write to a holder that
+    ///     does not exist.
+    /// </summary>
+    [Fact]
+    public async Task Restore_NonExistentHolder_ThrowsNotFound()
+    {
+        await Assert.ThrowsAsync<NotFoundException>(() => _policyHoldersService.Restore(99999));
+    }
+
+    /// <summary>
+    ///     A restore advances the write generation, so the next read serves the restored holder rather
+    ///     than an entry cached before the delete.
+    /// </summary>
+    [Fact]
+    public async Task Restore_EvictsTheCachedHolder()
+    {
+        var id = await SeedHolder("John", "Smith", "js@test.com");
+        await _policyHoldersService.GetById(id);
+        await _policyHoldersService.Delete(id);
+        await _policyHoldersService.Restore(id);
+
+        Assert.Equal("John", (await _policyHoldersService.GetById(id))!.FirstName);
+    }
+
+    /// <summary>
+    ///     Updating a holder writes the outbox message describing the change, so subscribers learn
+    ///     about it without polling the API.
+    /// </summary>
+    [Fact]
+    public async Task Update_WritesOutboxMessage()
+    {
+        var id = await SeedHolder("John", "Smith", "js@test.com");
+
+        await _policyHoldersService.Update(id, new UpdatePolicyHolderDto { FirstName = "Johnny" });
+
+        var message = await Context.OutboxMessages.SingleAsync(m => m.Type == "PolicyHolderUpdated");
+        Assert.Null(message.ProcessedAt);
+        Assert.Contains("Johnny", message.Content);
+    }
+
+    /// <summary>
+    ///     Deleting a holder writes the outbox message describing the removal, with the time the
+    ///     deletion happened.
+    /// </summary>
+    [Fact]
+    public async Task Delete_WritesOutboxMessage()
+    {
+        var id = await SeedHolder("John", "Smith", "js@test.com");
+
+        await _policyHoldersService.Delete(id);
+
+        var message = await Context.OutboxMessages.SingleAsync(m => m.Type == "PolicyHolderDeleted");
+        Assert.Null(message.ProcessedAt);
+        Assert.Contains(id.ToString(), message.Content);
+    }
+
+    /// <summary>
+    ///     A restore publishes the message describing the restoration, carrying no deletion date: what
+    ///     subscribers need to know is that the holder is back.
+    /// </summary>
+    [Fact]
+    public async Task Restore_WritesOutboxMessage()
+    {
+        var id = await SeedHolder("John", "Smith", "js@test.com");
+        await _policyHoldersService.Delete(id);
+
+        await _policyHoldersService.Restore(id);
+
+        var message = await Context.OutboxMessages.SingleAsync(m => m.Type == "PolicyHolderRestored");
+        Assert.Null(message.ProcessedAt);
+        Assert.Contains(id.ToString(), message.Content);
     }
 
     /// <summary>
