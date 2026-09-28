@@ -219,6 +219,41 @@ public class ClaimsService(AppDbContext context, IBusinessNumberGenerator number
     public const string IllegalTransitionRule = "illegal-claim-transition";
 
     /// <summary>
+    ///     Deletes a claim that has not been adjudicated, and records an outbox message.
+    /// </summary>
+    /// <remarks>
+    ///     An approved or denied claim is a decision: it carries who decided it, when, and the notes
+    ///     they left, and deleting the row would erase that record while leaving the payout it settled
+    ///     untouched. Such a claim is refused as a conflict instead. A claim still pending adjudication
+    ///     has no decision behind it, so removing it destroys nothing that was ever decided and its
+    ///     amount is released back to the policy's remaining coverage.
+    /// </remarks>
+    /// <param name="id">The claim identifier.</param>
+    /// <param name="cancellationToken">Token used to cancel the operation.</param>
+    /// <returns>True when a claim was found and deleted; false when no claim has that identifier.</returns>
+    public async Task<bool> Delete(int id, CancellationToken cancellationToken = default)
+    {
+        var claim = await context.Claims.FindAsync([id], cancellationToken);
+        if (claim == null) return false;
+
+        if (claim.Status != ClaimStatus.Pending)
+        {
+            throw new ConflictException(
+                $"Claim '{id}' has been adjudicated as {claim.Status} and can no longer be deleted.");
+        }
+
+        context.Claims.Remove(claim);
+
+        await context.SaveWithOutboxAsync(
+            claim,
+            "ClaimDeleted",
+            c => new { c.Id, c.PolicyId, c.Amount, c.Status },
+            cancellationToken);
+
+        return true;
+    }
+
+    /// <summary>
     ///     Whether a claim's amount counts against its policy's coverage limit.
     /// </summary>
     /// <remarks>

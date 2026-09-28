@@ -1,5 +1,6 @@
 using System.Net;
 using System.Net.Http.Json;
+using Microsoft.AspNetCore.Mvc;
 using PolicyManager.DTOs;
 using PolicyManager.Models.Enums;
 using PolicyManager.Tests.Infrastructure;
@@ -160,5 +161,80 @@ public class ClaimsControllerTests : ApiIntegrationTestBase
             new UpdateClaimStatusDto { Status = ClaimStatus.Approved });
 
         Assert.Equal(HttpStatusCode.NotFound, res.StatusCode);
+    }    ///     Deleting a claim awaiting adjudication removes it, so a later read is a 404 and the list no
+    ///     longer counts it.
+    /// </summary>
+    [Fact]
+    public async Task Delete_PendingClaim_RemovesIt()
+    {
+        var policyId = await SeedPolicyForNewHolderAsync();
+        var claimId = await SeedClaimAsync(policyId);
+        await SeedClaimAsync(policyId);
+
+        var res = await Client.DeleteAsync($"/api/claims/{claimId}");
+        Assert.Equal(HttpStatusCode.OK, res.StatusCode);
+
+        Assert.Equal(HttpStatusCode.NotFound, (await Client.GetAsync($"/api/claims/{claimId}")).StatusCode);
+
+        var remaining = await (await Client.GetAsync("/api/claims")).Content
+            .ReadFromJsonAsync<PagedResult<ClaimDto>>();
+        Assert.Single(remaining!.Items);
+        Assert.Equal(1, remaining.TotalCount);
+    }
+
+    /// <summary>
+    ///     Deleting an identifier nobody holds is a 404.
+    /// </summary>
+    [Fact]
+    public async Task Delete_NonExistentClaim_Returns404()
+    {
+        var res = await Client.DeleteAsync("/api/claims/99999");
+        Assert.Equal(HttpStatusCode.NotFound, res.StatusCode);
+    }
+
+    /// <summary>
+    ///     An adjudicated claim is refused, because the record of who decided it and why is the reason
+    ///     it stays in the book.
+    /// </summary>
+    [Fact]
+    public async Task Delete_ApprovedClaim_Returns409()
+    {
+        var policyId = await SeedPolicyForNewHolderAsync();
+        var claimId = await SeedClaimAsync(policyId);
+
+        await Client.PatchAsJsonAsync($"/api/claims/{claimId}/status",
+            new UpdateClaimStatusDto { Status = ClaimStatus.Approved, DecidedBy = "adj-1" });
+
+        var res = await Client.DeleteAsync($"/api/claims/{claimId}");
+        Assert.Equal(HttpStatusCode.Conflict, res.StatusCode);
+
+        // The decision trail is intact rather than removed with the row.
+        var dto = await (await Client.GetAsync($"/api/claims/{claimId}")).Content
+            .ReadFromJsonAsync<ClaimDto>();
+        Assert.Equal(ClaimStatus.Approved, dto!.Status);
+        Assert.Equal("adj-1", dto.DecidedBy);
+    }
+
+    /// <summary>
+    ///     The refusal reaches the caller as ProblemDetails naming the decision, not a bare status.
+    /// </summary>
+    [Fact]
+    public async Task Delete_DeniedClaim_ReturnsProblemDetails()
+    {
+        var policyId = await SeedPolicyForNewHolderAsync();
+        var claimId = await SeedClaimAsync(policyId);
+
+        await Client.PatchAsJsonAsync($"/api/claims/{claimId}/status",
+            new UpdateClaimStatusDto { Status = ClaimStatus.Denied });
+
+        var res = await Client.DeleteAsync($"/api/claims/{claimId}");
+
+        Assert.Equal(HttpStatusCode.Conflict, res.StatusCode);
+        Assert.Equal("application/problem+json", res.Content.Headers.ContentType?.MediaType);
+
+        var problem = await res.Content.ReadFromJsonAsync<ProblemDetails>();
+        Assert.Equal(409, problem!.Status);
+        Assert.Equal("Conflict", problem.Title);
+        Assert.Contains("Denied", problem.Detail);
     }
 }

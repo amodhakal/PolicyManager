@@ -1,3 +1,4 @@
+using Microsoft.EntityFrameworkCore;
 using PolicyManager.DTOs;
 using PolicyManager.Exceptions;
 using PolicyManager.Models;
@@ -157,5 +158,127 @@ public class ClaimsServiceTests : ServiceTestBase
 
         var all = await _claimsService.GetAll(new PaginationQuery());
         Assert.Equal(2, all.Items.Count);
+    }
+
+    /// <summary>
+    ///     A claim awaiting adjudication is removed outright.
+    /// </summary>
+    [Fact]
+    public async Task Delete_PendingClaim_RemovesTheRow()
+    {
+        var policyId = await SeedPolicy();
+        var id = await SeedClaim(policyId);
+
+        var deleted = await _claimsService.Delete(id);
+
+        Assert.True(deleted);
+        Assert.Null(await Context.Claims.FindAsync(id));
+    }
+
+    /// <summary>
+    ///     Deleting a claim that was never decided releases its amount back to the policy's coverage.
+    /// </summary>
+    [Fact]
+    public async Task Delete_PendingClaim_ReleasesItsCoverage()
+    {
+        var policy = new Policy
+        {
+            PolicyHolderId = (await SeedHolderEntityAsync()).Id,
+            Premium = 500m,
+            Status = PolicyStatus.Active,
+            CoverageLimit = 300m
+        };
+
+        Context.Policies.Add(policy);
+        await Context.SaveChangesAsync();
+
+        await SeedClaim(policy.Id, 200m);
+
+        // The whole 300 of coverage is committed, so a second claim of 200 has to be rejected.
+        await Assert.ThrowsAsync<BusinessRuleException>(() => SeedClaim(policy.Id, 200m));
+
+        var pending = await Context.Claims.SingleAsync();
+        await _claimsService.Delete(pending.Id);
+
+        // With the pending claim gone the same claim is acceptable again.
+        var id = await SeedClaim(policy.Id, 200m);
+        Assert.True(id > 0);
+    }
+
+    /// <summary>
+    ///     A delete of an identifier nobody holds reports that nothing was deleted, which the
+    ///     controller turns into a 404.
+    /// </summary>
+    [Fact]
+    public async Task Delete_NonExistentId_ReturnsFalse()
+    {
+        Assert.False(await _claimsService.Delete(99999));
+    }
+
+    /// <summary>
+    ///     An approved claim is a decision record and survives the delete attempt.
+    /// </summary>
+    [Fact]
+    public async Task Delete_ApprovedClaim_IsRefused()
+    {
+        var policyId = await SeedPolicy();
+        var id = await SeedClaim(policyId);
+        await _claimsService.UpdateStatus(id, new UpdateClaimStatusDto { Status = ClaimStatus.Approved });
+
+        await Assert.ThrowsAsync<ConflictException>(() => _claimsService.Delete(id));
+
+        var claim = await Context.Claims.FindAsync(id);
+        Assert.NotNull(claim);
+        Assert.Equal(ClaimStatus.Approved, claim.Status);
+    }
+
+    /// <summary>
+    ///     A denied claim is refused for the same reason an approved one is: the decision is the record.
+    /// </summary>
+    [Fact]
+    public async Task Delete_DeniedClaim_IsRefused()
+    {
+        var policyId = await SeedPolicy();
+        var id = await SeedClaim(policyId);
+        await _claimsService.UpdateStatus(id, new UpdateClaimStatusDto { Status = ClaimStatus.Denied });
+
+        await Assert.ThrowsAsync<ConflictException>(() => _claimsService.Delete(id));
+
+        Assert.NotNull(await Context.Claims.FindAsync(id));
+    }
+
+    /// <summary>
+    ///     Deleting a claim writes the outbox message describing the removal.
+    /// </summary>
+    [Fact]
+    public async Task Delete_WritesOutboxMessage()
+    {
+        var policyId = await SeedPolicy();
+        var id = await SeedClaim(policyId, 250m);
+
+        await _claimsService.Delete(id);
+
+        var message = await Context.OutboxMessages.SingleAsync(m => m.Type == "ClaimDeleted");
+        Assert.Null(message.ProcessedAt);
+        Assert.Contains(id.ToString(), message.Content);
+    }
+
+    /// <summary>
+    ///     A refused delete publishes nothing: the claim that was never removed must not be announced
+    ///     as removed.
+    /// </summary>
+    [Fact]
+    public async Task Delete_Refused_WritesNoOutboxMessage()
+    {
+        var policyId = await SeedPolicy();
+        var id = await SeedClaim(policyId);
+        await _claimsService.UpdateStatus(id, new UpdateClaimStatusDto { Status = ClaimStatus.Approved });
+
+        Context.OutboxMessages.RemoveRange(Context.OutboxMessages);
+        await Context.SaveChangesAsync();
+
+        await Assert.ThrowsAsync<ConflictException>(() => _claimsService.Delete(id));
+
+        Assert.Empty(await Context.OutboxMessages.ToListAsync());
     }
 }

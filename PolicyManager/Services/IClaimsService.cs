@@ -58,4 +58,16 @@ public interface IClaimsService
         string? adjusterNotes = null,
         string? rowVersion = null,
         CancellationToken cancellationToken = default);
+
+    /// <summary>
+    ///     Deletes a claim that has not been adjudicated.
+    /// </summary>
+    /// <remarks>
+    ///     An approved or denied claim is a decision record and is refused; see the implementation.
+    /// </remarks>
+    /// <param name="id">The claim identifier.</param>
+    /// <param name="cancellationToken">Token used to cancel the operation.</param>
+    /// <returns>True when a claim was found and deleted; false when no claim has that identifier.</returns>
+    /// <exception cref="Exceptions.ConflictException">The claim has already been adjudicated.</exception>
+    public Task<bool> Delete(int id, CancellationToken cancellationToken = default);
 }

@@ -108,6 +108,91 @@ public class SqlServerApiTests : SqlServerTestBase, IAsyncLifetime
         Assert.Equal(Models.Enums.ClaimStatus.Pending, claim.Status);
     }
 
+    /// <summary>
+    ///     Taking another holder's email address is a 409 the caller can resolve, on the same terms as
+    ///     registering it in the first place.
+    /// </summary>
+    /// <remarks>
+    ///     Needs SQL Server: the in-memory provider has no unique index, so the collision would be
+    ///     stored silently there and the test would pass for the wrong reason.
+    /// </remarks>
+    [Fact]
+    public async Task Updating_a_holder_to_a_taken_email_is_a_conflict()
+    {
+        await CreateHolderAsync("Grace", "Hopper", "grace@example.com");
+        var secondId = await CreateHolderAsync("Alan", "Turing", "alan@example.com");
+
+        var response = await Client.PutAsJsonAsync($"/api/policyholders/{secondId}",
+            new UpdatePolicyHolderDto { Email = "grace@example.com" });
+
+        Assert.Equal(HttpStatusCode.Conflict, response.StatusCode);
+        Assert.Equal("application/problem+json", response.Content.Headers.ContentType?.MediaType);
+
+        // The loser of the collision is left exactly as it was.
+        var unchanged = await (await Client.GetAsync($"/api/policyholders/{secondId}")).Content
+            .ReadFromJsonAsync<PolicyHolderDto>();
+        Assert.Equal("alan@example.com", unchanged!.Email);
+    }
+
+    /// <summary>
+    ///     A hard delete on the real schema removes the holder's row rather than leaving it orphaned.
+    /// </summary>
+    /// <remarks>
+    ///     Needs SQL Server: cascade behaviour is the database's, and the in-memory provider enforces
+    ///     no foreign keys at all.
+    /// </remarks>
+    [Fact]
+    public async Task Deleting_a_holder_removes_their_row_from_sql_server()
+    {
+        var holderId = await CreateHolderAsync("Edsger", "Dijkstra", "edsger@example.com");
+
+        var response = await Client.DeleteAsync($"/api/policyholders/{holderId}");
+
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+        Assert.Equal(HttpStatusCode.NotFound, (await Client.GetAsync($"/api/policyholders/{holderId}")).StatusCode);
+    }
+
+    /// <summary>
+    ///     A holder whose policy carries claims is refused, so the cascade never reaches the claims.
+    /// </summary>
+    /// <remarks>
+    ///     Needs SQL Server: this is the case where the cascade would actually destroy rows, so the
+    ///     guard is only meaningful where the cascade exists.
+    /// </remarks>
+    [Fact]
+    public async Task Deleting_a_holder_with_claimed_policies_is_refused_by_sql_server()
+    {
+        var holderId = await CreateHolderAsync("Barbara", "Liskov", "barbara@example.com");
+
+        var policyResponse = await Client.PostAsJsonAsync("/api/policies", new CreatePolicyDto
+        {
+            PolicyHolderId = holderId,
+            Premium = 500m,
+            Type = Models.Enums.PolicyType.Life,
+            CoverageLimit = 1000m,
+            StartDate = new DateTime(2026, 3, 1),
+            EndDate = new DateTime(2027, 3, 1)
+        });
+
+        var policy = await policyResponse.Content.ReadFromJsonAsync<PolicyDto>();
+
+        var claimResponse = await Client.PostAsJsonAsync("/api/claims", new CreateClaimDto
+        {
+            PolicyId = policy!.Id, Amount = 400m, Description = "Hospital costs"
+        });
+
+        Assert.Equal(HttpStatusCode.Created, claimResponse.StatusCode);
+        var claim = await claimResponse.Content.ReadFromJsonAsync<ClaimDto>();
+
+        var response = await Client.DeleteAsync($"/api/policyholders/{holderId}");
+
+        Assert.Equal(HttpStatusCode.Conflict, response.StatusCode);
+
+        // The policy and the claim behind it are all still there.
+        Assert.Equal(HttpStatusCode.OK, (await Client.GetAsync($"/api/policies/{policy.Id}")).StatusCode);
+        Assert.Equal(HttpStatusCode.OK, (await Client.GetAsync($"/api/claims/{claim!.Id}")).StatusCode);
+    }
+
     private async Task<int> CreateHolderAsync(string first, string last, string email)
     {
         var response = await Client.PostAsJsonAsync("/api/policyholders",
