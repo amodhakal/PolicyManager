@@ -104,4 +104,25 @@ public class ClaimsController(IClaimsService claimsService)
             id, dto, dto.DecidedBy, dto.Notes, dto.RowVersion, cancellationToken);
         return Ok();
     }
+
+    /// <summary>
+    ///     Deletes a claim that has not been adjudicated.
+    /// </summary>
+    /// <remarks>
+    ///     An approved or denied claim records who decided it, when, and why. Deleting it would erase
+    ///     that record while leaving the payout it settled in place, so it is refused with a 409 and the
+    ///     claim has to stay in the book.
+    /// </remarks>
+    /// <param name="id">The claim identifier.</param>
+    /// <param name="cancellationToken">Token used to cancel the operation.</param>
+    /// <returns>No content if successful.</returns>
+    /// <response code="200">Claim deleted successfully.</response>
+    /// <response code="404">Claim not found.</response>
+    /// <response code="409">The claim has already been adjudicated.</response>
+    [HttpDelete("{id:int}")]
+    public async Task<ActionResult> Delete(int id, CancellationToken cancellationToken)
+    {
+        var deleted = await claimsService.Delete(id, cancellationToken);
+        return deleted ? Ok() : NotFound();
+    }
 }
