@@ -17,15 +17,22 @@ public class ClaimsController(IClaimsService claimsService, IPoliciesService pol
     : ControllerBase
 {
     /// <summary>
-    ///     Retrieves all claims.
+    ///     Retrieves a page of claims.
     /// </summary>
+    /// <remarks>
+    ///     Supports <c>?page=</c>, <c>?pageSize=</c>, <c>?sortBy=</c> and <c>?descending=</c>. The page
+    ///     size is capped at <see cref="PaginationQuery.MaxPageSize" />; an out-of-range value is clamped
+    ///     rather than rejected. An unrecognised <c>sortBy</c> falls back to ordering by identifier.
+    /// </remarks>
+    /// <param name="pagination">The requested page, page size and sort.</param>
     /// <param name="cancellationToken">Token used to cancel the operation.</param>
-    /// <returns>A list of all claims.</returns>
-    /// <response code="200">Returns the list of claims.</response>
+    /// <returns>A page of claims.</returns>
+    /// <response code="200">Returns the requested page of claims and the total matching count.</response>
     [HttpGet]
-    public async Task<ActionResult<IEnumerable<ClaimDto>>> GetAll(CancellationToken cancellationToken)
+    public async Task<ActionResult<PagedResult<ClaimDto>>> GetAll(
+        [FromQuery] PaginationQuery pagination, CancellationToken cancellationToken)
     {
-        var claims = await claimsService.GetAll(cancellationToken);
+        var claims = await claimsService.GetAll(pagination, cancellationToken);
         return Ok(claims);
     }
 

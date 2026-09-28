@@ -61,8 +61,9 @@ public class PoliciesControllerTests : ApiIntegrationTestBase
         var res = await Client.GetAsync("/api/policies");
         Assert.Equal(HttpStatusCode.OK, res.StatusCode);
 
-        var policies = await res.Content.ReadFromJsonAsync<List<PolicyDto>>();
-        Assert.Equal(2, policies!.Count);
+        var policies = await res.Content.ReadFromJsonAsync<PagedResult<PolicyDto>>();
+        Assert.Equal(2, policies!.Items.Count);
+        Assert.Equal(2, policies.TotalCount);
     }
 
     /// <summary>
@@ -80,9 +81,9 @@ public class PoliciesControllerTests : ApiIntegrationTestBase
         var res = await Client.GetAsync("/api/policies?status=Active");
         Assert.Equal(HttpStatusCode.OK, res.StatusCode);
 
-        var policies = await res.Content.ReadFromJsonAsync<List<PolicyDto>>();
-        Assert.Single(policies!);
-        Assert.Equal(activeId, policies![0].Id);
+        var policies = await res.Content.ReadFromJsonAsync<PagedResult<PolicyDto>>();
+        var policy = Assert.Single(policies!.Items);
+        Assert.Equal(activeId, policy.Id);
     }
 
     /// <summary>
@@ -100,9 +101,35 @@ public class PoliciesControllerTests : ApiIntegrationTestBase
         var res = await Client.GetAsync("/api/policies?status=Cancelled");
         Assert.Equal(HttpStatusCode.OK, res.StatusCode);
 
-        var policies = await res.Content.ReadFromJsonAsync<List<PolicyDto>>();
-        Assert.Single(policies!);
-        Assert.Equal(cancelledId, policies![0].Id);
+        var policies = await res.Content.ReadFromJsonAsync<PagedResult<PolicyDto>>();
+        var policy = Assert.Single(policies!.Items);
+        Assert.Equal(cancelledId, policy.Id);
+    }
+
+    /// <summary>
+    ///     The status filter and pagination compose: TotalCount counts the filtered set only, and the
+    ///     requested page slices it.
+    /// </summary>
+    [Fact]
+    public async Task GetAll_StatusFilterWithPagination_Combines()
+    {
+        var holderId = await SeedHolderAsync();
+        var firstActive = await SeedPolicyAsync(holderId, 100m);
+        await SeedPolicyAsync(holderId, 200m);
+        var cancelledId = await SeedPolicyAsync(holderId, 300m);
+
+        await Client.DeleteAsync($"/api/policies/{cancelledId}");
+
+        var res = await Client.GetAsync("/api/policies?status=Active&page=2&pageSize=1&sortBy=premium&descending=true");
+        Assert.Equal(HttpStatusCode.OK, res.StatusCode);
+
+        var page = await res.Content.ReadFromJsonAsync<PagedResult<PolicyDto>>();
+        Assert.NotNull(page);
+        Assert.Equal(2, page!.TotalCount);
+        Assert.Equal(2, page.TotalPages);
+        Assert.True(page.HasPrevious);
+        Assert.False(page.HasNext);
+        Assert.Equal(firstActive, Assert.Single(page.Items).Id);
     }
 
     /// <summary>
@@ -118,7 +145,6 @@ public class PoliciesControllerTests : ApiIntegrationTestBase
         Assert.Equal(HttpStatusCode.OK, res.StatusCode);
 
         var dto = await res.Content.ReadFromJsonAsync<PolicyDto>();
-        Assert.NotNull(dto);
         Assert.Equal("Jane Doe", dto.PolicyholderName);
         Assert.Equal(PolicyStatus.Active, dto.Status);
     }

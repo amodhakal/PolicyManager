@@ -143,7 +143,7 @@ public class ClaimsServiceTests : ServiceTestBase
         await SeedClaim(policyId);
         await SeedClaim(policyId);
 
-        var all = await _claimsService.GetAll();
-        Assert.Equal(2, all.Count());
+        var all = await _claimsService.GetAll(new PaginationQuery());
+        Assert.Equal(2, all.Items.Count);
     }
 }

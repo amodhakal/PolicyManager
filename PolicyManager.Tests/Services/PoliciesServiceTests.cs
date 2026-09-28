@@ -81,8 +81,7 @@ public class PoliciesServiceTests : ServiceTestBase
         var cancelledId = await SeedPolicy(holder.Id);
         await _policiesService.Cancel(cancelledId);
 
-        var activeEnumerable = await _policiesService.GetAll(PolicyStatus.Active);
-        var active = activeEnumerable.ToList();
+        var active = (await _policiesService.GetAll(new PaginationQuery(), PolicyStatus.Active)).Items;
 
         Assert.Single(active);
         Assert.Equal(activeId, active[0].Id);
@@ -98,8 +97,8 @@ public class PoliciesServiceTests : ServiceTestBase
         await SeedPolicy(holder.Id);
         await SeedPolicy(holder.Id);
 
-        var all = await _policiesService.GetAll(null);
-        Assert.Equal(2, all.Count());
+        var all = await _policiesService.GetAll(new PaginationQuery(), null);
+        Assert.Equal(2, all.Items.Count);
     }
 
     /// <summary>

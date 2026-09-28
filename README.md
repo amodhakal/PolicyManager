@@ -186,14 +186,14 @@ CI without needing a database. Note that CI only runs for pull requests whose **
 ### Policyholders
 | Method | Route | Description |
 |---|---|---|
-| `GET` | `/api/policyholders` | List all policyholders |
+| `GET` | `/api/policyholders` | List a page of policyholders; supports `?page=`, `?pageSize=`, `?sortBy=`, `?descending=` |
 | `POST` | `/api/policyholders` | Create a policyholder |
 | `GET` | `/api/policyholders/{id}` | Get by ID |
 
 ### Policies
 | Method | Route | Description |
 |---|---|---|
-| `GET` | `/api/policies` | List all; supports `?status=Active` filter |
+| `GET` | `/api/policies` | List a page of policies; supports `?status=Active` and the paging/sorting options |
 | `POST` | `/api/policies` | Create a policy linked to a policyholder |
 | `GET` | `/api/policies/{id}` | Get with policyholder info |
 | `PUT` | `/api/policies/{id}` | Update status or premium |
@@ -202,15 +202,66 @@ CI without needing a database. Note that CI only runs for pull requests whose **
 ### Claims
 | Method | Route | Description |
 |---|---|---|
-| `GET` | `/api/claims` | List all claims |
+| `GET` | `/api/claims` | List a page of claims; supports the paging/sorting options |
 | `POST` | `/api/claims` | File a claim against a policy |
 | `GET` | `/api/claims/{id}` | Get claim details |
 | `PATCH` | `/api/claims/{id}/status` | Adjudicate, approve or deny the claim |
+
+| Method | Route | Description |
+|---|---|---|
 
 Route casing follows ASP.NET Core's default: `[Route("api/[controller]")]` resolves
 `PolicyHolders` to `/api/policyholders`, `Policies` to `/api/policies`, and `Claims` to
 `/api/claims`. All `{id}` segments are constrained to integers in code
 (`[HttpGet("{id:int}")]`).
+
+---
+
+## Pagination, Filtering and Sorting
+
+All three list endpoints take the same four query-string options and return a `PagedResult<T>`
+envelope instead of a bare array:
+
+| Option | Default | Behaviour |
+|---|---|---|
+| `page` | `1` | One-based page number |
+| `pageSize` | `25` | Clamped to `1`..`100` (`PaginationQuery.MaxPageSize`) |
+| `sortBy` | resource default | Field name, matched case-insensitively |
+| `descending` | `false` | Reverses the order `sortBy` establishes |
+
+The envelope carries `items`, `page`, `pageSize`, `totalCount`, `totalPages`, `hasPrevious`
+and `hasNext`. `totalCount` is the size of the whole filtered set, so a client can page
+without a second request; `totalPages` is `0` when nothing matches, and a page past the end
+comes back with empty `items` and the true `totalCount` rather than a 404.
+
+Out-of-range values are **clamped, not rejected**: `?page=0` is page 1, `?pageSize=0` is one
+item, and `?pageSize=100000` is 100. A caller with a bad page size wants the nearest sensible
+page, not a 400.
+
+An unrecognised `sortBy` also does not fail. Each service has its own explicit list of sortable
+fields and falls back to ordering by identifier, which is unique and therefore the only total
+order:
+
+| Resource | Sortable | Default |
+|---|---|---|
+| Policyholders | `id`, `firstName`, `lastName`, `email` | `id` |
+| Policies | `id`, `policyNumber`, `premium`, `status`, `policyHolderId` | `id` |
+| Claims | `id`, `claimNumber`, `amount`, `status`, `filedAt`, `policyId` | `id` |
+
+Every ordering appends the identifier as a tie-breaker. Without it, two rows sharing a last name
+or a premium could swap between two consecutive requests and the same page number would return
+different rows.
+
+The filtering, the `COUNT`, the ordering, the `OFFSET`/`FETCH` and the projection all stay in
+the SQL the database receives: the query stays an `IQueryable` and the DTO projection is applied
+*after* `Skip`/`Take`, so paging happens in the database rather than over a materialized list.
+`?status=` on `/api/policies` still works and composes with paging — `totalCount` counts the
+filtered set only.
+
+A page is a snapshot. `totalCount` describes the rows that matched when the page was read, so
+rows written afterwards are not reflected in it.
+
+---
 
 ---
 
@@ -257,16 +308,25 @@ or `tsconfig.json` in `scripts/`, so they need a runtime that supports both.
 
 ## Caching
 
-Policyholder reads are served from an in-process `IMemoryCache`. Keys are centralised in
-`PolicyManager/Models/CacheKeys.cs` rather than being built as string literals at each call
-site. The cache is registered with a 10 MiB `SizeLimit`, and **every** entry declares an
-explicit `Size` — once a `SizeLimit` is configured, `MemoryCache` throws if any entry omits
-it. Priorities are set so the large "all policyholders" collection is evicted before hot
-single-holder entries, and `Create` invalidates both keys explicitly.
+Single policyholder reads (`GET /api/policyholders/{id}`) are served from an in-process
+`IMemoryCache`. Keys are centralised in `PolicyManager/Models/CacheKeys.cs` rather than being
+built as string literals at each call site. The cache is registered with a 10 MiB `SizeLimit`,
+and **every** entry declares an explicit `Size` — once a `SizeLimit` is configured,
+`MemoryCache` throws if any entry omits it. Entries are held at `CacheItemPriority.High`, and
+`Create` invalidates the key for the identifier it was given.
 
-Be aware that the collection entry is a cache-invalidation seam: writes made **outside** the
-service (direct `AppDbContext` use, a future bulk import) do not invalidate it and will be
-masked until the entry expires.
+**The list endpoint is not cached, and the former `policyholders:all` entry is gone.** A
+paginated read cannot use a cached full table: serving one page out of it still holds every row
+in memory — the unbounded growth the `SizeLimit` exists to prevent — and a table large enough
+to exceed that limit evicts the entry, turning every page into a full rebuild. A single
+unkeyed entry also cannot serve more than one sort order, and the caller still needs
+`totalCount` and its slice, neither of which the cache could supply without the full
+materialization it existed to avoid. An indexed `ORDER BY` / `OFFSET` / `FETCH` returns a
+bounded result instead.
+
+Retiring the entry also closes a correctness hole rather than trading one for another: writes
+made **outside** the service (direct `AppDbContext` use, a future bulk import) never invalidated
+it, so they stayed invisible to every list reader until the entry expired.
 
 
 ---

@@ -51,7 +51,7 @@ public class PolicyHoldersServiceTests : ServiceTestBase
     }
 
     /// <summary>
-    ///     Verifies that GetAll returns all policy holders.
+    ///     Verifies that GetAll returns every policy holder when they all fit on the first page.
     /// </summary>
     [Fact]
     public async Task GetAll_ReturnsAllHolders()
@@ -59,8 +59,10 @@ public class PolicyHoldersServiceTests : ServiceTestBase
         await SeedHolder("A", "A", "a@a.com");
         await SeedHolder("B", "B", "b@b.com");
 
-        var result = await _policyHoldersService.GetAll();
-        Assert.Equal(2, result.Count());
+        var result = await _policyHoldersService.GetAll(new PaginationQuery());
+        Assert.Equal(2, result.Items.Count);
+        Assert.Equal(2, result.TotalCount);
+        Assert.False(result.HasNext);
     }
 
     /// <summary>
