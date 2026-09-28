@@ -52,10 +52,16 @@ public class SqlServerProblemDetailsTests : SqlServerTestBase
     }
 
     /// <summary>
-    ///     A policy for a holder that does not exist is a 409 naming the constraint.
+    ///     A policy for a holder that does not exist is a 404 naming the missing holder.
     /// </summary>
+    /// <remarks>
+    ///     Was 409 from the foreign key mapping. The service now checks the holder first and
+    ///     raises <c>NotFoundException</c>, which is the correct status for a resource
+    ///     referenced by a valid request that does not exist. The foreign key stays as the
+    ///     backstop for races between the check and the insert.
+    /// </remarks>
     [Fact]
-    public async Task Orphan_policy_returns_409_naming_the_constraint()
+    public async Task Orphan_policy_returns_404_naming_the_missing_holder()
     {
         await using var factory = new SqlServerApiFactory(Fixture);
         using var client = factory.CreateClient();
@@ -66,10 +72,10 @@ public class SqlServerProblemDetailsTests : SqlServerTestBase
             StartDate = new DateTime(2026, 1, 1), EndDate = new DateTime(2027, 1, 1)
         });
 
-        Assert.Equal(HttpStatusCode.Conflict, response.StatusCode);
+        Assert.Equal(HttpStatusCode.NotFound, response.StatusCode);
 
         var problem = await ReadProblemAsync(response);
-        Assert.Equal(409, problem.Status);
+        Assert.Equal(404, problem.Status);
         Assert.False(string.IsNullOrWhiteSpace(problem.Title));
     }
 

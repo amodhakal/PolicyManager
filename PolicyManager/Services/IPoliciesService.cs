@@ -31,6 +31,7 @@ public interface IPoliciesService
     /// <summary>
     ///     Creates a new policy.
     /// </summary>
+    /// <exception cref="Exceptions.NotFoundException">The referenced policyholder does not exist.</exception>
     /// <param name="dto">The policy data transfer object.</param>
     /// <param name="cancellationToken">Token used to cancel the operation.</param>
     /// <returns>The unique identifier of the newly created policy.</returns>

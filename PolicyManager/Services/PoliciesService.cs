@@ -124,11 +124,21 @@ public class PoliciesService(AppDbContext context) : IPoliciesService
     /// <summary>
     ///     Creates a new policy and records an outbox message transactionally.
     /// </summary>
+    /// <remarks>
+    ///     The holder is checked first so a dangling reference is a 404 naming the missing
+    ///     holder, rather than a foreign key violation surfacing as a 409 or a 500. The
+    ///     database constraint stays as the backstop for races between the check and the insert.
+    /// </remarks>
     /// <param name="dto">The policy data transfer object.</param>
     /// <param name="cancellationToken">Token used to cancel the operation.</param>
     /// <returns>The unique identifier of the newly created policy.</returns>
+    /// <exception cref="NotFoundException">The referenced policyholder does not exist.</exception>
     public async Task<int> Create(CreatePolicyDto dto, CancellationToken cancellationToken = default)
     {
+        var holderExists = await context.PolicyHolders
+            .AnyAsync(h => h.Id == dto.PolicyHolderId, cancellationToken);
+        if (!holderExists) throw new NotFoundException("PolicyHolder", dto.PolicyHolderId);
+
         var policy = new Policy
         {
             Premium = dto.Premium,

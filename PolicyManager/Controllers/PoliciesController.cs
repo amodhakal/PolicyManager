@@ -61,7 +61,7 @@ public class PoliciesController(IPoliciesService policiesService) : ControllerBa
     /// <param name="cancellationToken">Token used to cancel the operation.</param>
     /// <returns>A created result whose body is the new policy.</returns>
     /// <response code="201">Policy created successfully.</response>
-    /// <response code="400">Invalid input or policyholder not found.</response>
+    /// <response code="404">The referenced policyholder does not exist.</response>
     [HttpPost]
     public async Task<ActionResult<PolicyDto>> Create(CreatePolicyDto dto, CancellationToken cancellationToken)
     {
