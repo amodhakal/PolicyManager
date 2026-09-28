@@ -7,7 +7,7 @@ using PolicyManager.Services;
 var builder = WebApplication.CreateBuilder(args);
 if (builder.Environment.IsDevelopment()) Env.Load("../.env");
 
-builder.Services.AddMemoryCache();
+builder.Services.AddMemoryCache(o => o.SizeLimit = 10 * 1024 * 1024);
 builder.Services.AddControllers();
 builder.Services.AddEndpointsApiExplorer();
 builder.Services.AddSwaggerGen(options =>
