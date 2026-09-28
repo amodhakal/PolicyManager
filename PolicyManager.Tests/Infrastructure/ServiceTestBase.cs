@@ -1,7 +1,9 @@
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Diagnostics;
+using Microsoft.Extensions.Logging.Abstractions;
 using PolicyManager.Data;
 using PolicyManager.Models;
+using PolicyManager.Services;
 
 namespace PolicyManager.Tests.Infrastructure;
 
@@ -24,12 +26,19 @@ public abstract class ServiceTestBase : IDisposable
             .Options;
 
         Context = new AppDbContext(options);
+        Numbers = new BusinessNumberGenerator(Context, TimeProvider.System, NullLogger<BusinessNumberGenerator>.Instance);
     }
 
     /// <summary>
     ///     Gets the in-memory context under test.
     /// </summary>
     protected AppDbContext Context { get; }
+
+    /// <summary>
+    ///     Gets the business-number generator bound to <see cref="Context" />, for tests that
+    ///     construct a service themselves now that the services depend on one.
+    /// </summary>
+    protected BusinessNumberGenerator Numbers { get; }
 
     /// <summary>
     ///     Releases the resources owned by this instance.

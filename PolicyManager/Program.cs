@@ -74,6 +74,10 @@ builder.Services.AddScoped<IPolicyHoldersService, PolicyHoldersService>();
 builder.Services.AddScoped<IPoliciesService, PoliciesService>();
 builder.Services.AddScoped<IClaimsService, ClaimsService>();
 
+// Scoped, not singleton: the generator allocates through the request's own DbContext, so that a
+// failure rolls back with the rest of the unit of work rather than against a long-lived connection.
+builder.Services.AddScoped<IBusinessNumberGenerator, BusinessNumberGenerator>();
+
 // The audit columns are stamped from here rather than by each service, so a new write path is
 // audited by default. ICurrentUser is scoped because it reads the ambient HTTP context, which
 // differs per request.
