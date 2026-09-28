@@ -8,12 +8,15 @@ namespace PolicyManager.Services;
 public interface IPolicyHoldersService
 {
     /// <summary>
-    ///     Retrieves all policy holders, from the cache when a cached collection is present and from the database
-    ///     otherwise.
+    ///     Retrieves one page of policy holders, ordered, with the total count of the whole result
+    ///     set. Sorts by <c>id</c>, <c>firstName</c>, <c>lastName</c> or <c>email</c>, defaulting to
+    ///     <c>id</c>.
     /// </summary>
+    /// <param name="pagination">The requested page, page size and sort. Normalized by the service.</param>
     /// <param name="cancellationToken">Token used to cancel the operation.</param>
-    /// <returns>A list of all policy holders.</returns>
-    public Task<IEnumerable<PolicyHolderDto>> GetAll(CancellationToken cancellationToken = default);
+    /// <returns>A page of policy holders. Not served from the cache.</returns>
+    public Task<PagedResult<PolicyHolderDto>> GetAll(
+        PaginationQuery pagination, CancellationToken cancellationToken = default);
 
     /// <summary>
     ///     Retrieves a policy holder by their unique identifier.

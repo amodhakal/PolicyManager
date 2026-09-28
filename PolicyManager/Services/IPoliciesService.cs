@@ -9,12 +9,16 @@ namespace PolicyManager.Services;
 public interface IPoliciesService
 {
     /// <summary>
-    ///     Retrieves all policies, optionally filtered by status.
+    ///     Retrieves one page of policies, optionally filtered by status, ordered, with the total
+    ///     count of the whole filtered result set. Sorts by <c>id</c>, <c>policyNumber</c>,
+    ///     <c>premium</c>, <c>status</c> or <c>policyHolderId</c>, defaulting to <c>id</c>.
     /// </summary>
+    /// <param name="pagination">The requested page, page size and sort. Normalized by the service.</param>
     /// <param name="status">Optional status filter.</param>
     /// <param name="cancellationToken">Token used to cancel the operation.</param>
-    /// <returns>A list of policies matching the filter criteria.</returns>
-    public Task<IEnumerable<PolicyDto>> GetAll(PolicyStatus? status, CancellationToken cancellationToken = default);
+    /// <returns>A page of policies matching the filter criteria.</returns>
+    public Task<PagedResult<PolicyDto>> GetAll(
+        PaginationQuery pagination, PolicyStatus? status, CancellationToken cancellationToken = default);
 
     /// <summary>
     ///     Retrieves a policy by its unique identifier.

@@ -50,12 +50,12 @@ public class ClaimsControllerTests : ApiIntegrationTestBase
         var res = await Client.GetAsync("/api/claims");
         Assert.Equal(HttpStatusCode.OK, res.StatusCode);
 
-        var claims = await res.Content.ReadFromJsonAsync<List<ClaimDto>>();
-        Assert.Equal(2, claims!.Count);
+        var claims = await res.Content.ReadFromJsonAsync<PagedResult<ClaimDto>>();
+        Assert.Equal(2, claims!.Items.Count);
     }
 
     /// <summary>
-    ///     GetAll on an empty database returns an empty list, not 404.
+    ///     GetAll on an empty database returns an empty page, not 404.
     /// </summary>
     [Fact]
     public async Task GetAll_NoClaims_ReturnsEmptyList()
@@ -63,8 +63,33 @@ public class ClaimsControllerTests : ApiIntegrationTestBase
         var res = await Client.GetAsync("/api/claims");
         Assert.Equal(HttpStatusCode.OK, res.StatusCode);
 
-        var claims = await res.Content.ReadFromJsonAsync<List<ClaimDto>>();
-        Assert.Empty(claims!);
+        var claims = await res.Content.ReadFromJsonAsync<PagedResult<ClaimDto>>();
+        Assert.Empty(claims!.Items);
+        Assert.Equal(0, claims.TotalCount);
+        Assert.False(claims.HasNext);
+    }
+
+    /// <summary>
+    ///     GetAll sorts descending: the largest claim amount comes first, and a page size that covers
+    ///     every row leaves nothing on a following page.
+    /// </summary>
+    [Fact]
+    public async Task GetAll_SortedDescending_ReturnsLargestAmountLast()
+    {
+        var policyId = await SeedPolicyForNewHolderAsync();
+        await SeedClaimAsync(policyId, 100m);
+        await SeedClaimAsync(policyId, 900m);
+        await SeedClaimAsync(policyId, 500m);
+
+        var res = await Client.GetAsync("/api/claims?sortBy=amount&descending=true&pageSize=3");
+        Assert.Equal(HttpStatusCode.OK, res.StatusCode);
+
+        var page = await res.Content.ReadFromJsonAsync<PagedResult<ClaimDto>>();
+        Assert.Equal(3, page!.Items.Count);
+        Assert.Equal(900m, page.Items[0].Amount);
+        Assert.Equal(500m, page.Items[1].Amount);
+        Assert.Equal(100m, page.Items[2].Amount);
+        Assert.False(page.HasNext);
     }
 
     /// <summary>

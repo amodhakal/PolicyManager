@@ -16,15 +16,22 @@ namespace PolicyManager.Controllers;
 public class PolicyHoldersController(IPolicyHoldersService policyHoldersService) : ControllerBase
 {
     /// <summary>
-    ///     Retrieves all policyholders.
+    ///     Retrieves a page of policyholders.
     /// </summary>
+    /// <remarks>
+    ///     Supports <c>?page=</c>, <c>?pageSize=</c>, <c>?sortBy=</c> and <c>?descending=</c>. The page
+    ///     size is capped at <see cref="PaginationQuery.MaxPageSize" />; an out-of-range value is clamped
+    ///     rather than rejected. An unrecognised <c>sortBy</c> falls back to ordering by identifier.
+    /// </remarks>
+    /// <param name="pagination">The requested page, page size and sort.</param>
     /// <param name="cancellationToken">Token used to cancel the operation.</param>
-    /// <returns>A list of all policyholders.</returns>
-    /// <response code="200">Returns the list of policyholders.</response>
+    /// <returns>A page of policyholders.</returns>
+    /// <response code="200">Returns the requested page of policyholders and the total matching count.</response>
     [HttpGet]
-    public async Task<ActionResult<IEnumerable<PolicyHolderDto>>> GetAll(CancellationToken cancellationToken)
+    public async Task<ActionResult<PagedResult<PolicyHolderDto>>> GetAll(
+        [FromQuery] PaginationQuery pagination, CancellationToken cancellationToken)
     {
-        var holders = await policyHoldersService.GetAll(cancellationToken);
+        var holders = await policyHoldersService.GetAll(pagination, cancellationToken);
         return Ok(holders);
     }
 

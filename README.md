@@ -186,14 +186,14 @@ CI without needing a database. Note that CI only runs for pull requests whose **
 ### Policyholders
 | Method | Route | Description |
 |---|---|---|
-| `GET` | `/api/policyholders` | List all policyholders |
+| `GET` | `/api/policyholders` | List a page of policyholders; supports `?page=`, `?pageSize=`, `?sortBy=`, `?descending=` |
 | `POST` | `/api/policyholders` | Create a policyholder |
 | `GET` | `/api/policyholders/{id}` | Get by ID |
 
 ### Policies
 | Method | Route | Description |
 |---|---|---|
-| `GET` | `/api/policies` | List all; supports `?status=Active` filter |
+| `GET` | `/api/policies` | List a page of policies; supports `?status=Active` and the paging/sorting options |
 | `POST` | `/api/policies` | Create a policy linked to a policyholder |
 | `GET` | `/api/policies/{id}` | Get with policyholder info |
 | `PUT` | `/api/policies/{id}` | Update status or premium |
@@ -202,15 +202,120 @@ CI without needing a database. Note that CI only runs for pull requests whose **
 ### Claims
 | Method | Route | Description |
 |---|---|---|
-| `GET` | `/api/claims` | List all claims |
+| `GET` | `/api/claims` | List a page of claims; supports the paging/sorting options |
 | `POST` | `/api/claims` | File a claim against a policy |
 | `GET` | `/api/claims/{id}` | Get claim details |
 | `PATCH` | `/api/claims/{id}/status` | Adjudicate, approve or deny the claim |
+
+### Health
+| Method | Route | Description |
+|---|---|---|
+| `GET` | `/health` | Liveness. Runs every registered check |
+| `GET` | `/health/ready` | Readiness. Runs only the checks tagged `ready` (currently `sql-server`) |
 
 Route casing follows ASP.NET Core's default: `[Route("api/[controller]")]` resolves
 `PolicyHolders` to `/api/policyholders`, `Policies` to `/api/policies`, and `Claims` to
 `/api/claims`. All `{id}` segments are constrained to integers in code
 (`[HttpGet("{id:int}")]`).
+
+---
+
+## Pagination, Filtering and Sorting
+
+All three list endpoints take the same four query-string options and return a `PagedResult<T>`
+envelope instead of a bare array:
+
+| Option | Default | Behaviour |
+|---|---|---|
+| `page` | `1` | One-based page number |
+| `pageSize` | `25` | Clamped to `1`..`100` (`PaginationQuery.MaxPageSize`) |
+| `sortBy` | resource default | Field name, matched case-insensitively |
+| `descending` | `false` | Reverses the order `sortBy` establishes |
+
+The envelope carries `items`, `page`, `pageSize`, `totalCount`, `totalPages`, `hasPrevious`
+and `hasNext`. `totalCount` is the size of the whole filtered set, so a client can page
+without a second request; `totalPages` is `0` when nothing matches, and a page past the end
+comes back with empty `items` and the true `totalCount` rather than a 404.
+
+Out-of-range values are **clamped, not rejected**: `?page=0` is page 1, `?pageSize=0` is one
+item, and `?pageSize=100000` is 100. A caller with a bad page size wants the nearest sensible
+page, not a 400.
+
+An unrecognised `sortBy` also does not fail. Each service has its own explicit list of sortable
+fields and falls back to ordering by identifier, which is unique and therefore the only total
+order:
+
+| Resource | Sortable | Default |
+|---|---|---|
+| Policyholders | `id`, `firstName`, `lastName`, `email` | `id` |
+| Policies | `id`, `policyNumber`, `premium`, `status`, `policyHolderId` | `id` |
+| Claims | `id`, `claimNumber`, `amount`, `status`, `filedAt`, `policyId` | `id` |
+
+Every ordering appends the identifier as a tie-breaker. Without it, two rows sharing a last name
+or a premium could swap between two consecutive requests and the same page number would return
+different rows.
+
+The filtering, the `COUNT`, the ordering, the `OFFSET`/`FETCH` and the projection all stay in
+the SQL the database receives: the query stays an `IQueryable` and the DTO projection is applied
+*after* `Skip`/`Take`, so paging happens in the database rather than over a materialized list.
+`?status=` on `/api/policies` still works and composes with paging — `totalCount` counts the
+filtered set only.
+
+A page is a snapshot. `totalCount` describes the rows that matched when the page was read, so
+rows written afterwards are not reflected in it.
+
+---
+
+## Health Checks
+
+Two unauthenticated endpoints, both registered with `MapHealthChecks` and both emitting JSON:
+
+| Route | Predicate | Use |
+|---|---|---|
+| `GET /health` | every registered check | **Liveness** — is this process running |
+| `GET /health/ready` | checks tagged `ready` | **Readiness** — can this instance serve a request now |
+
+They are separate on purpose. A process whose database is unreachable is still *running*, and
+restarting it will not fix the database; only a readiness failure should take the instance out of
+rotation. A single combined endpoint would force an orchestrator to choose between restarting a
+healthy-but-isolated pod and leaving a broken one in the load balancer.
+
+There is one check today, `sql-server` (`PolicyManager/Health/SqlServerHealthCheck.cs`), tagged
+`ready`. It opens a connection through the injected `AppDbContext` and runs `SELECT 1` — the same
+connection string, provider and credentials the application itself uses, so a check that passed
+cannot coexist with a failure on every real request. It probes with a query rather than
+`CanConnectAsync` alone, because a connection validated when the process started is routinely dead
+by the time a probe first asks. A five-second per-check timeout bounds how long a hung connection
+can hold a probe open.
+
+The body carries the overall status, the per-check status, the published description and the
+timings, and the status is `200` for `Healthy` and `Degraded` and `503` for `Unhealthy`.
+
+```json
+{
+  "status": "Healthy",
+  "totalDurationMs": 3.412,
+  "checks": {
+    "sql-server": { "status": "Healthy", "description": null, "durationMs": 3.412 }
+  }
+}
+```
+
+**The failure description is constant — "The database is not reachable." — for every cause.**
+That endpoint has no authentication, and a provider exception names the server, the database, the
+login and often the path to the credential. The exception is logged instead, so it is reachable
+through the `X-Correlation-ID` of the probe rather than to anyone who can reach the port.
+
+For the same reason the built-in `HealthCheckResponseWriter.WriteMinimalPlaintext` is deliberately
+*not* used: it publishes `entry.Exception.Message`. The custom `ResponseWriter` in `Program.cs`
+emits only the status, the description the check chose to publish, and the timings. The check's
+`Data` (the exception's *type name*, never its message) is attached to the `HealthCheckResult` for
+the health-check pipeline to consume, but is not serialized to the caller.
+
+Because the app calls `UseHttpsRedirection()`, a plain-HTTP probe against a configured HTTPS port
+gets a `307` rather than a verdict. Point probes at the HTTPS endpoint. (With no HTTPS port
+configured — the container, which is published on `http://localhost:8080` — the redirection is a
+logged no-op and `/health` answers directly.)
 
 ---
 
@@ -225,6 +330,7 @@ PolicyManager/
 │   │   └── Enums/
 │   ├── Services/
 │   ├── Data/
+│   ├── Health/
 │   ├── Migrations/
 │   ├── Properties/
 │   ├── Dockerfile
@@ -257,17 +363,90 @@ or `tsconfig.json` in `scripts/`, so they need a runtime that supports both.
 
 ## Caching
 
-Policyholder reads are served from an in-process `IMemoryCache`. Keys are centralised in
-`PolicyManager/Models/CacheKeys.cs` rather than being built as string literals at each call
-site. The cache is registered with a 10 MiB `SizeLimit`, and **every** entry declares an
-explicit `Size` — once a `SizeLimit` is configured, `MemoryCache` throws if any entry omits
-it. Priorities are set so the large "all policyholders" collection is evicted before hot
-single-holder entries, and `Create` invalidates both keys explicitly.
+Single policyholder reads (`GET /api/policyholders/{id}`) are served from an in-process
+`IMemoryCache`. Keys are centralised in `PolicyManager/Models/CacheKeys.cs` rather than being
+built as string literals at each call site. The cache is registered with a 10 MiB `SizeLimit`,
+and **every** entry declares an explicit `Size` — once a `SizeLimit` is configured,
+`MemoryCache` throws if any entry omits it. Entries are held at `CacheItemPriority.High`, and
+`Create` invalidates the key for the identifier it was given.
 
-Be aware that the collection entry is a cache-invalidation seam: writes made **outside** the
-service (direct `AppDbContext` use, a future bulk import) do not invalidate it and will be
-masked until the entry expires.
+**The list endpoint is not cached, and the former `policyholders:all` entry is gone.** A
+paginated read cannot use a cached full table: serving one page out of it still holds every row
+in memory — the unbounded growth the `SizeLimit` exists to prevent — and a table large enough
+to exceed that limit evicts the entry, turning every page into a full rebuild. A single
+unkeyed entry also cannot serve more than one sort order, and the caller still needs
+`totalCount` and its slice, neither of which the cache could supply without the full
+materialization it existed to avoid. An indexed `ORDER BY` / `OFFSET` / `FETCH` returns a
+bounded result instead.
 
+Retiring the entry also closes a correctness hole rather than trading one for another: writes
+made **outside** the service (direct `AppDbContext` use, a future bulk import) never invalidated
+it, so they stayed invisible to every list reader until the entry expired.
+
+
+---
+
+## Errors
+
+Every failure leaves the API as [RFC 9457](https://www.rfc-editor.org/rfc/rfc9457) ProblemDetails
+with `Content-Type: application/problem+json`, and every response carries an
+`X-Correlation-ID` header.
+
+### Correlation IDs
+
+`CorrelationIdMiddleware` assigns each request an identifier, taken from an inbound
+`X-Correlation-ID` when the caller supplies one and minted from the connection's trace identifier
+otherwise, so a trace started upstream survives the hop into this service. The identifier is pushed
+into the logging scope, so every log line for that request carries it without any call site passing
+it along.
+
+Two details are deliberate:
+
+- **The header is registered through `OnStarting`, not assigned eagerly.** The exception handler
+  calls `Response.Clear()` before writing its body, and that wipes the header collection — so setting
+  it eagerly loses it on precisely the responses that matter. The ProblemDetails body still carries
+  the ID either way, which is what makes this easy to miss.
+- **The inbound value is capped at 128 characters and restricted to characters safe in a log.** It is
+  attacker-controlled and reaches the log for every line of the request. An unusable value is
+  discarded in favour of the trace identifier rather than sanitised into something that looks
+  legitimate but does not match what the caller sent.
+
+### Status mapping
+
+`GlobalExceptionHandler` maps each exception to the status that actually describes it, so a caller is
+never told "server error" for something they can fix:
+
+| Exception | Status |
+|---|---|
+| `NotFoundException` | 404 |
+| `ConflictException` | 409 |
+| `BusinessRuleException` | 422, with the rule id in the body |
+| `BadHttpRequestException` | the status the framework assigned |
+| `DbUpdateException` — unique index/constraint | 409, naming the constraint |
+| `DbUpdateException` — foreign key | 409, naming the constraint |
+| `DbUpdateException` — value too large for its column | 400 |
+| `DbUpdateException` — anything else | 500 |
+| `OperationCanceledException` (server-side) | 499 |
+| anything else | 500 |
+
+Database faults are translated rather than passed through, because EF Core wraps provider exceptions
+in an opaque `DbUpdateException`. Without that, a duplicate email is an indistinguishable 500.
+
+An unrecognised `DbUpdateException` is deliberately a 500 rather than a 409: a deadlock, a command
+timeout or a dropped connection is not something the caller caused, and reporting it as a conflict
+would keep it at Warning severity where it never trips the alerting a real server fault should.
+
+**Exception text is never echoed to the caller for server faults.** It routinely carries column
+names, values and SQL fragments. It stays in the logs, reachable by correlation ID, and the body
+tells the caller to quote that ID when reporting the problem.
+
+A request aborted by the client is logged and dropped without writing a response — there is nobody
+left to read it, and writing to an aborted response body throws.
+
+The three domain exception types (`NotFoundException`, `ConflictException`, `BusinessRuleException`)
+are the vocabulary for these failures and are mapped above, but **the services do not throw them
+yet** — they return null or complete silently and the controllers choose the status. A duplicate
+email already returns 409 today, via the unique-index mapping rather than an explicit check.
 
 ---
 

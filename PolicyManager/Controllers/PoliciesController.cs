@@ -17,17 +17,25 @@ namespace PolicyManager.Controllers;
 public class PoliciesController(IPoliciesService policiesService) : ControllerBase
 {
     /// <summary>
-    ///     Retrieves all policies, optionally filtered by status.
+    ///     Retrieves a page of policies, optionally filtered by status.
     /// </summary>
+    /// <remarks>
+    ///     Supports <c>?page=</c>, <c>?pageSize=</c>, <c>?sortBy=</c> and <c>?descending=</c>. The page
+    ///     size is capped at <see cref="PaginationQuery.MaxPageSize" />; an out-of-range value is clamped
+    ///     rather than rejected. An unrecognised <c>sortBy</c> falls back to ordering by identifier.
+    /// </remarks>
+    /// <param name="pagination">The requested page, page size and sort.</param>
     /// <param name="status">Optional status filter for policies.</param>
     /// <param name="cancellationToken">Token used to cancel the operation.</param>
-    /// <returns>A list of policies matching the filter criteria.</returns>
-    /// <response code="200">Returns the list of policies.</response>
+    /// <returns>A page of policies matching the filter criteria.</returns>
+    /// <response code="200">Returns the requested page of policies and the total matching count.</response>
     [HttpGet]
-    public async Task<ActionResult<IEnumerable<PolicyDto>>> GetAll(
-        [FromQuery] PolicyStatus? status, CancellationToken cancellationToken)
+    public async Task<ActionResult<PagedResult<PolicyDto>>> GetAll(
+        [FromQuery] PaginationQuery pagination,
+        [FromQuery] PolicyStatus? status,
+        CancellationToken cancellationToken)
     {
-        var policies = await policiesService.GetAll(status, cancellationToken);
+        var policies = await policiesService.GetAll(pagination, status, cancellationToken);
         return Ok(policies);
     }
 

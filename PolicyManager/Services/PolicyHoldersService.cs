@@ -1,3 +1,4 @@
+using System.Linq.Expressions;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Caching.Memory;
 using PolicyManager.Data;
@@ -19,53 +20,94 @@ public class PolicyHoldersService(AppDbContext context, IMemoryCache cache) : IP
     private const long PolicyHolderSizeBytes = 256;
 
     /// <summary>
-    ///     Approximate managed-memory footprint, in bytes, of the list instance and its backing array that carry a
-    ///     cached collection, excluding the per-holder cost already accounted for by
-    ///     <see cref="PolicyHolderSizeBytes" />.
-    /// </summary>
-    private const long CollectionOverheadBytes = 64;
-
-    /// <summary>
-    ///     How long a cached collection of all policyholders stays valid before it is re-materialized. Deliberately
-    ///     shorter than <see cref="SinglePolicyHolderExpiration" />: rebuilding the collection costs a full table scan
-    ///     whereas rebuilding one entry costs an indexed seek, so a shorter lifetime still amortizes far better while
-    ///     bounding how long a write that bypasses service-level invalidation can stay invisible to list readers.
-    /// </summary>
-    private static readonly TimeSpan AllPolicyHoldersExpiration = TimeSpan.FromMinutes(1);
-
-    /// <summary>
-    ///     How long a cached single policyholder stays valid before it is re-read. Longer than
-    ///     <see cref="AllPolicyHoldersExpiration" /> because an indexed seek is cheap to repeat and a stale record is
-    ///     visible to only the one reader who requested that identifier.
+    ///     How long a cached single policyholder stays valid before it is re-read. Deliberately short: an indexed
+    ///     seek is cheap to repeat, and a stale record is visible to only the one reader who requested that
+    ///     identifier.
     /// </summary>
     private static readonly TimeSpan SinglePolicyHolderExpiration = TimeSpan.FromMinutes(5);
 
     /// <summary>
-    ///     Retrieves all policyholders from the database.
+    ///     Retrieves one page of policyholders, ordered, with the total count of the whole result set.
     /// </summary>
+    /// <remarks>
+    ///     The full-list cache that used to sit on this path is retired. It cached the entire table, so a
+    ///     paginated read served out of it would still have had to hold every row in memory — the exact
+    ///     unbounded growth the 10 MiB <c>SizeLimit</c> exists to prevent, and a table large enough to
+    ///     overflow that limit evicted the entry and turned every page into a full rebuild. A single
+    ///     unkeyed-by-page entry also cannot serve more than one sort order, and the caller still needs
+    ///     <c>TotalCount</c> and the page slice, both of which the cache could not supply without the
+    ///     full materialization it existed to avoid. Letting the database do <c>ORDER BY</c> /
+    ///     <c>OFFSET</c>/<c>FETCH</c> returns a bounded, index-backed read instead.
+    /// </remarks>
+    /// <param name="pagination">The requested page, page size and sort. Normalized before use.</param>
     /// <param name="cancellationToken">Token used to cancel the operation.</param>
-    /// <returns>A list of all policyholders.</returns>
-    public async Task<IEnumerable<PolicyHolderDto>> GetAll(CancellationToken cancellationToken = default)
+    /// <returns>A page of policyholders. Not served from the cache.</returns>
+    public async Task<PagedResult<PolicyHolderDto>> GetAll(
+        PaginationQuery pagination, CancellationToken cancellationToken = default)
     {
-        if (cache.TryGetValue(CacheKeys.AllPolicyHolders, out IEnumerable<PolicyHolderDto>? cached)) return cached!;
+        pagination.Normalize();
 
-        var holders = await context.PolicyHolders.Select(p => new PolicyHolderDto
-        {
-            Id = p.Id,
-            FirstName = p.FirstName,
-            LastName = p.LastName,
-            Email = p.Email
-        }).ToListAsync(cancellationToken);
+        // Counted on the un-ordered, un-paged set: the count is the same either way, and letting the
+        // database pick the plan for a bare COUNT is cheaper than ordering rows it will then discard.
+        var totalCount = await context.PolicyHolders.CountAsync(cancellationToken);
 
-        if (holders.Count > 0)
-            cache.Set(CacheKeys.AllPolicyHolders, holders, new MemoryCacheEntryOptions
+        // Ordering happens on the entity query and the projection to the DTO happens after Skip/Take,
+        // so the database applies the sort and the offset rather than materializing every holder to
+        // slice in memory.
+        var items = await ApplySorting(context.PolicyHolders, pagination.SortBy, pagination.Descending)
+            .Skip((pagination.Page - 1) * pagination.PageSize)
+            .Take(pagination.PageSize)
+            .Select(h => new PolicyHolderDto
             {
-                Size = CollectionOverheadBytes + holders.Count * PolicyHolderSizeBytes,
-                Priority = CacheItemPriority.Low,
-                AbsoluteExpirationRelativeToNow = AllPolicyHoldersExpiration
-            });
+                Id = h.Id,
+                FirstName = h.FirstName,
+                LastName = h.LastName,
+                Email = h.Email
+            })
+            .ToListAsync(cancellationToken);
 
-        return holders;
+        return PagedResult<PolicyHolderDto>.Create(items, totalCount, pagination.Page, pagination.PageSize);
+    }
+
+    /// <summary>
+    ///     Orders the policyholder query by the requested field.
+    /// </summary>
+    /// <remarks>
+    ///     An absent or unrecognised key falls back to the identifier, which is unique and therefore
+    ///     the only ordering that is total. Every branch appends the identifier as a tie-breaker, so
+    ///     rows with the same name or email still have a defined order — without that, the same page
+    ///     number could return different rows on two consecutive requests.
+    /// </remarks>
+    /// <param name="query">The policyholders to order.</param>
+    /// <param name="sortBy">The requested field name, or null for the default.</param>
+    /// <param name="descending">Whether to reverse the order.</param>
+    /// <returns>The ordered query.</returns>
+    private static IQueryable<PolicyHolder> ApplySorting(
+        IQueryable<PolicyHolder> query, string? sortBy, bool descending)
+    {
+        return (sortBy?.Trim().ToLowerInvariant()) switch
+        {
+            "firstname" => Order(query, descending, h => h.FirstName),
+            "lastname" => Order(query, descending, h => h.LastName),
+            "email" => Order(query, descending, h => h.Email),
+            _ => Order(query, descending, h => h.Id)
+        };
+    }
+
+    /// <summary>
+    ///     Applies an ascending or descending order on one field, breaking ties on the identifier.
+    /// </summary>
+    /// <param name="query">The policyholders to order.</param>
+    /// <param name="descending">Whether to reverse the order.</param>
+    /// <param name="keySelector">The field to order by.</param>
+    /// <typeparam name="TKey">The type of the ordering field.</typeparam>
+    /// <returns>The ordered query.</returns>
+    private static IOrderedQueryable<PolicyHolder> Order<TKey>(
+        IQueryable<PolicyHolder> query, bool descending, Expression<Func<PolicyHolder, TKey>> keySelector)
+    {
+        return descending
+            ? query.OrderByDescending(keySelector).ThenBy(h => h.Id)
+            : query.OrderBy(keySelector).ThenBy(h => h.Id);
     }
 
     /// <summary>
@@ -97,6 +139,10 @@ public class PolicyHoldersService(AppDbContext context, IMemoryCache cache) : IP
     /// <summary>
     ///     Creates a new policyholder and records an outbox message transactionally.
     /// </summary>
+    /// <remarks>
+    ///     Only the single-holder key is invalidated. There is no list entry to evict any more, so a
+    ///     write from outside this service can no longer be masked by a stale collection.
+    /// </remarks>
     /// <param name="dto">The policyholder data transfer object.</param>
     /// <param name="cancellationToken">Token used to cancel the operation.</param>
     /// <returns>The unique identifier of the newly created policyholder.</returns>
@@ -111,7 +157,6 @@ public class PolicyHoldersService(AppDbContext context, IMemoryCache cache) : IP
             h => new { h.Id, h.FirstName, h.LastName, h.Email },
             cancellationToken);
 
-        cache.Remove(CacheKeys.AllPolicyHolders);
         cache.Remove(CacheKeys.ById(holder.Id));
         return holder.Id;
     }

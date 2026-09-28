@@ -1,3 +1,4 @@
+using System.Linq.Expressions;
 using Microsoft.EntityFrameworkCore;
 using PolicyManager.Data;
 using PolicyManager.DTOs;
@@ -12,24 +13,87 @@ namespace PolicyManager.Services;
 public class PoliciesService(AppDbContext context) : IPoliciesService
 {
     /// <summary>
-    ///     Retrieves all policies, optionally filtered by status.
+    ///     Retrieves one page of policies, optionally filtered by status, ordered, with the total
+    ///     count of the whole filtered result set.
     /// </summary>
+    /// <remarks>
+    ///     The former <c>Include</c> is gone because the projection already joins to the policyholder
+    ///     to build <c>PolicyholderName</c>, and an <c>Include</c> carried into a <c>CountAsync</c> is
+    ///     both redundant and a source of provider errors. Filtering, counting, ordering, skipping and
+    ///     the projection all stay in the SQL the database receives.
+    /// </remarks>
+    /// <param name="pagination">The requested page, page size and sort. Normalized before use.</param>
     /// <param name="status">Optional status filter.</param>
     /// <param name="cancellationToken">Token used to cancel the operation.</param>
-    /// <returns>A list of policies matching the filter criteria.</returns>
-    public async Task<IEnumerable<PolicyDto>> GetAll(PolicyStatus? status, CancellationToken cancellationToken = default)
+    /// <returns>A page of policies matching the filter criteria.</returns>
+    public async Task<PagedResult<PolicyDto>> GetAll(
+        PaginationQuery pagination, PolicyStatus? status, CancellationToken cancellationToken = default)
     {
-        var query = context.Policies.Include(p => p.PolicyHolder).AsQueryable();
+        pagination.Normalize();
+
+        var query = context.Policies.AsQueryable();
         if (status != null) query = query.Where(p => p.Status == status);
 
-        return await query.Select(p => new PolicyDto
+        // Counted after the filter and before the ordering, so TotalCount describes the filtered set
+        // and the database is not asked to sort rows the page will discard.
+        var totalCount = await query.CountAsync(cancellationToken);
+
+        var items = await ApplySorting(query, pagination.SortBy, pagination.Descending)
+            .Skip((pagination.Page - 1) * pagination.PageSize)
+            .Take(pagination.PageSize)
+            .Select(p => new PolicyDto
+            {
+                Id = p.Id,
+                PolicyNumber = p.PolicyNumber,
+                Premium = p.Premium,
+                Status = p.Status,
+                PolicyholderName = $"{p.PolicyHolder.FirstName} {p.PolicyHolder.LastName}"
+            })
+            .ToListAsync(cancellationToken);
+
+        return PagedResult<PolicyDto>.Create(items, totalCount, pagination.Page, pagination.PageSize);
+    }
+
+    /// <summary>
+    ///     Orders the policy query by the requested field.
+    /// </summary>
+    /// <remarks>
+    ///     An absent or unrecognised key falls back to the identifier, which is unique and therefore
+    ///     the only ordering that is total. Every branch appends the identifier as a tie-breaker so a
+    ///     page number always identifies the same rows. <c>policyholderName</c> is not offered
+    ///     because it is a concatenated expression with nothing to order on when two holders share a
+    ///     name; callers wanting that order should sort by <c>policyHolderId</c> instead.
+    /// </remarks>
+    /// <param name="query">The policies to order.</param>
+    /// <param name="sortBy">The requested field name, or null for the default.</param>
+    /// <param name="descending">Whether to reverse the order.</param>
+    /// <returns>The ordered query.</returns>
+    private static IQueryable<Policy> ApplySorting(IQueryable<Policy> query, string? sortBy, bool descending)
+    {
+        return (sortBy?.Trim().ToLowerInvariant()) switch
         {
-            Id = p.Id,
-            PolicyNumber = p.PolicyNumber,
-            Premium = p.Premium,
-            Status = p.Status,
-            PolicyholderName = $"{p.PolicyHolder.FirstName} {p.PolicyHolder.LastName}"
-        }).ToListAsync(cancellationToken);
+            "policynumber" => Order(query, descending, p => p.PolicyNumber),
+            "premium" => Order(query, descending, p => p.Premium),
+            "status" => Order(query, descending, p => p.Status),
+            "policyholderid" => Order(query, descending, p => p.PolicyHolderId),
+            _ => Order(query, descending, p => p.Id)
+        };
+    }
+
+    /// <summary>
+    ///     Applies an ascending or descending order on one field, breaking ties on the identifier.
+    /// </summary>
+    /// <param name="query">The policies to order.</param>
+    /// <param name="descending">Whether to reverse the order.</param>
+    /// <param name="keySelector">The field to order by.</param>
+    /// <typeparam name="TKey">The type of the ordering field.</typeparam>
+    /// <returns>The ordered query.</returns>
+    private static IOrderedQueryable<Policy> Order<TKey>(
+        IQueryable<Policy> query, bool descending, Expression<Func<Policy, TKey>> keySelector)
+    {
+        return descending
+            ? query.OrderByDescending(keySelector).ThenBy(p => p.Id)
+            : query.OrderBy(keySelector).ThenBy(p => p.Id);
     }
 
     /// <summary>

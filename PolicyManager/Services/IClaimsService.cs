@@ -8,11 +8,15 @@ namespace PolicyManager.Services;
 public interface IClaimsService
 {
     /// <summary>
-    ///     Retrieves all claims from the database.
+    ///     Retrieves one page of claims, ordered, with the total count of the whole result set.
+    ///     Sorts by <c>id</c>, <c>claimNumber</c>, <c>amount</c>, <c>status</c>, <c>filedAt</c> or
+    ///     <c>policyId</c>, defaulting to <c>id</c>.
     /// </summary>
+    /// <param name="pagination">The requested page, page size and sort. Normalized by the service.</param>
     /// <param name="cancellationToken">Token used to cancel the operation.</param>
-    /// <returns>A list of all claims as ClaimDto objects.</returns>
-    public Task<IEnumerable<ClaimDto>> GetAll(CancellationToken cancellationToken = default);
+    /// <returns>A page of claims as ClaimDto objects.</returns>
+    public Task<PagedResult<ClaimDto>> GetAll(
+        PaginationQuery pagination, CancellationToken cancellationToken = default);
 
     /// <summary>
     ///     Retrieves a claim by its unique identifier.

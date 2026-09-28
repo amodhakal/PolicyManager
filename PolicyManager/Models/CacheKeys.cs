@@ -4,13 +4,13 @@ namespace PolicyManager.Models;
 ///     Central definition of the <see cref="Microsoft.Extensions.Caching.Memory.IMemoryCache" /> keys used by the
 ///     application, so cache keys are never hand-built as magic strings at individual call sites.
 /// </summary>
+/// <remarks>
+///     The only keys are per-identifier lookups. The former "all policyholders" collection key is gone:
+///     the list endpoint is paginated and ordered per request, so there is no single result to cache.
+///     See <c>PolicyHoldersService.GetAll</c> for the reasoning.
+/// </remarks>
 public static class CacheKeys
 {
-    /// <summary>
-    ///     The key under which the cached collection of all policyholders is stored.
-    /// </summary>
-    public const string AllPolicyHolders = "policyholders:all";
-
     /// <summary>
     ///     Builds the cache key for a single policyholder identified by its unique identifier.
     /// </summary>
