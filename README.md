@@ -291,6 +291,34 @@ The ordering matters. Serialising before the insert produces a message whose `Id
 serialising second is what makes the published payload carry a real identifier, and the
 explicit transaction is what preserves atomicity across the two writes.
 
-Messages currently carry a `Type` discriminator (`PolicyCreated`, `PolicyUpdated`,
-`PolicyCancelled`, `PolicyHolderCreated`, `ClaimCreated`, `ClaimStatusUpdated`) and a JSON
-`Content` payload. The processor marks each row with `ProcessedAt` when it drains it.
+Messages carry a `Type` discriminator (`PolicyCreated`, `PolicyUpdated`, `PolicyCancelled`,
+`PolicyHolderCreated`, `ClaimCreated`, `ClaimStatusUpdated`) and a JSON `Content` payload.
+
+### Delivery
+
+`OutboxDispatcher` claims a batch, publishes it, and records the outcome of each message. The
+claim is a read narrowed to plausible rows followed by a **conditional** `UPDATE` that only
+touches rows no other processor currently holds, so when the API is scaled horizontally each
+message is claimed by exactly one instance. The claim is a lease (`LockedUntil`), not a
+permanent lock, so an instance that dies mid-batch releases its work instead of stranding it.
+
+Failures are retried on an exponential backoff (`BaseRetryDelay * 2^(attempt-1)`, capped at
+`MaxRetryDelay`) recorded in `NextAttemptAt`, and `AttemptCount`/`Error` track the history — the
+`Error` column was previously written but never acted on, so a failing message was retried
+forever at a fixed five-second cadence. After `MaxAttempts` the message is **dead-lettered**:
+`DeadLetteredAt` is stamped and the row leaves the poll set. That is deliberately distinct from
+`ProcessedAt`, because a dead-lettered message was never delivered and treating it as processed
+would make the table look drained when it is not.
+
+The poll interval adapts to the backlog — `BusyDelay` after a pass that delivered something,
+exponential backoff up to `MaxIdleDelay` while idle — so a busy outbox drains promptly without an
+idle instance querying the table several times a second.
+
+Everything above is configured under the `Outbox` section of `appsettings.json`:
+`BatchSize`, `LockDuration`, `BusyDelay`, `MinIdleDelay`, `MaxIdleDelay`, `BaseRetryDelay`,
+`MaxRetryDelay`, `MaxAttempts`.
+
+`IOutboxPublisher` is the transport seam. The registered `LoggingOutboxPublisher` records each
+message and returns success — there is no broker on the other end yet, so **messages are drained
+and discarded**. Replacing it with a real transport means registering a different
+`IOutboxPublisher`; the claiming, retry and dead-lettering policy is unaffected.

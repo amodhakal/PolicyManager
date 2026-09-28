@@ -29,6 +29,7 @@ public class InMemoryApiFactory : WebApplicationFactory<Program>
         builder.ConfigureServices(services =>
         {
             TestHostServiceOverrides.RemoveAppDbContext(services);
+            TestHostServiceOverrides.RemoveOutboxProcessor(services);
 
             services.AddDbContext<AppDbContext>(options => options
                 .UseInMemoryDatabase(_databaseName)
