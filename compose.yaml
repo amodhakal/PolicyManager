@@ -8,6 +8,7 @@
       context: .
       dockerfile: PolicyManager/Dockerfile
     environment:
+      - ASPNETCORE_ENVIRONMENT=Development
       - DB_HOST=db
       - DB_NAME=${DB_NAME:-PolicyManager}
       - DB_USER=${DB_USER:-SA}
