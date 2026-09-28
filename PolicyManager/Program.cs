@@ -5,6 +5,8 @@ using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.DependencyInjection.Extensions;
 using PolicyManager.Configuration;
 using PolicyManager.Data;
+using PolicyManager.Errors;
+using PolicyManager.Middleware;
 using PolicyManager.Services;
 
 var environmentName = ResolveEnvironmentName(args);
@@ -17,6 +19,21 @@ if (IsDevelopmentEnvironment(environmentName))
 var builder = WebApplication.CreateBuilder(args);
 
 builder.Services.AddMemoryCache(o => o.SizeLimit = 10 * 1024 * 1024);
+// Every failure leaves as ProblemDetails carrying the correlation ID, whether it is produced by
+// model binding, by the exception handler, or by a controller returning ObjectResult.
+builder.Services.AddProblemDetails(options =>
+{
+    options.CustomizeProblemDetails = context =>
+    {
+        context.ProblemDetails.Instance ??= context.HttpContext.Request.Path;
+
+        if (context.HttpContext.Items.TryGetValue(CorrelationIdMiddleware.ItemKey, out var correlationId))
+            context.ProblemDetails.Extensions["correlationId"] = correlationId;
+    };
+});
+
+builder.Services.AddExceptionHandler<GlobalExceptionHandler>();
+
 builder.Services.AddControllers();
 builder.Services.AddEndpointsApiExplorer();
 
@@ -37,6 +54,7 @@ builder.Services.AddDbContext<AppDbContext>(options =>
 
 builder.Services.Configure<OutboxOptions>(builder.Configuration.GetSection(OutboxOptions.SectionName));
 
+
 builder.Services.AddScoped<IPolicyHoldersService, PolicyHoldersService>();
 builder.Services.AddScoped<IPoliciesService, PoliciesService>();
 builder.Services.AddScoped<IClaimsService, ClaimsService>();
@@ -53,6 +71,12 @@ if (app.Environment.IsDevelopment())
     app.UseSwagger();
     app.UseSwaggerUI();
 }
+
+app.UseMiddleware<CorrelationIdMiddleware>();
+
+// Must precede the exception handler so the correlation ID is already in scope when a failure is
+// classified, and precede the rest of the pipeline so it covers everything downstream.
+app.UseExceptionHandler();
 
 app.UseHttpsRedirection();
 app.UseAuthorization();

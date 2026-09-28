@@ -271,6 +271,70 @@ masked until the entry expires.
 
 ---
 
+## Errors
+
+Every failure leaves the API as [RFC 9457](https://www.rfc-editor.org/rfc/rfc9457) ProblemDetails
+with `Content-Type: application/problem+json`, and every response carries an
+`X-Correlation-ID` header.
+
+### Correlation IDs
+
+`CorrelationIdMiddleware` assigns each request an identifier, taken from an inbound
+`X-Correlation-ID` when the caller supplies one and minted from the connection's trace identifier
+otherwise, so a trace started upstream survives the hop into this service. The identifier is pushed
+into the logging scope, so every log line for that request carries it without any call site passing
+it along.
+
+Two details are deliberate:
+
+- **The header is registered through `OnStarting`, not assigned eagerly.** The exception handler
+  calls `Response.Clear()` before writing its body, and that wipes the header collection — so setting
+  it eagerly loses it on precisely the responses that matter. The ProblemDetails body still carries
+  the ID either way, which is what makes this easy to miss.
+- **The inbound value is capped at 128 characters and restricted to characters safe in a log.** It is
+  attacker-controlled and reaches the log for every line of the request. An unusable value is
+  discarded in favour of the trace identifier rather than sanitised into something that looks
+  legitimate but does not match what the caller sent.
+
+### Status mapping
+
+`GlobalExceptionHandler` maps each exception to the status that actually describes it, so a caller is
+never told "server error" for something they can fix:
+
+| Exception | Status |
+|---|---|
+| `NotFoundException` | 404 |
+| `ConflictException` | 409 |
+| `BusinessRuleException` | 422, with the rule id in the body |
+| `BadHttpRequestException` | the status the framework assigned |
+| `DbUpdateException` — unique index/constraint | 409, naming the constraint |
+| `DbUpdateException` — foreign key | 409, naming the constraint |
+| `DbUpdateException` — value too large for its column | 400 |
+| `DbUpdateException` — anything else | 500 |
+| `OperationCanceledException` (server-side) | 499 |
+| anything else | 500 |
+
+Database faults are translated rather than passed through, because EF Core wraps provider exceptions
+in an opaque `DbUpdateException`. Without that, a duplicate email is an indistinguishable 500.
+
+An unrecognised `DbUpdateException` is deliberately a 500 rather than a 409: a deadlock, a command
+timeout or a dropped connection is not something the caller caused, and reporting it as a conflict
+would keep it at Warning severity where it never trips the alerting a real server fault should.
+
+**Exception text is never echoed to the caller for server faults.** It routinely carries column
+names, values and SQL fragments. It stays in the logs, reachable by correlation ID, and the body
+tells the caller to quote that ID when reporting the problem.
+
+A request aborted by the client is logged and dropped without writing a response — there is nobody
+left to read it, and writing to an aborted response body throws.
+
+The three domain exception types (`NotFoundException`, `ConflictException`, `BusinessRuleException`)
+are the vocabulary for these failures and are mapped above, but **the services do not throw them
+yet** — they return null or complete silently and the controllers choose the status. A duplicate
+email already returns 409 today, via the unique-index mapping rather than an explicit check.
+
+---
+
 ## Transactional Outbox
 
 Policy creation, policy updates and cancellation, claim filing and claim adjudication each
