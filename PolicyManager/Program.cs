@@ -1,3 +1,4 @@
+using Asp.Versioning;
 using System.Reflection;
 using System.Text.Json;
 using System.Text.RegularExpressions;
@@ -6,6 +7,7 @@ using Microsoft.AspNetCore.Diagnostics.HealthChecks;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.DependencyInjection.Extensions;
 using Microsoft.Extensions.Diagnostics.HealthChecks;
+using Microsoft.OpenApi;
 using PolicyManager.Configuration;
 using PolicyManager.Data;
 using PolicyManager.Errors;
@@ -39,6 +41,22 @@ builder.Services.AddProblemDetails(options =>
 
 builder.Services.AddExceptionHandler<GlobalExceptionHandler>();
 
+// Versioning is configured before MVC so the API explorer can read it, and both are additive: the
+// unversioned routes still exist and still mean 1.0. ReportApiVersions makes every response say which
+// versions the endpoint supports, so a client can discover that without a second call or a document.
+builder.Services
+    .AddApiVersioning(options =>
+    {
+        options.DefaultApiVersion = new ApiVersion(1, 0);
+        options.AssumeDefaultVersionWhenUnspecified = true;
+        options.ReportApiVersions = true;
+    })
+    .AddApiExplorer(versions =>
+    {
+        versions.GroupNameFormat = "'v'VVV";
+        versions.SubstituteApiVersionInUrl = true;
+    });
+
 builder.Services.AddControllers();
 builder.Services.AddEndpointsApiExplorer();
 
@@ -49,6 +67,14 @@ if (builder.Environment.IsDevelopment())
         var xmlFile = $"{Assembly.GetExecutingAssembly().GetName().Name}.xml";
         var xmlPath = Path.Combine(AppContext.BaseDirectory, xmlFile);
         options.IncludeXmlComments(xmlPath);
+
+        // One document per version rather than a merged one, so a diff between two of them is
+        // exactly the surface change in that version and nothing else.
+        options.SwaggerDoc(ApiVersions.V1, new OpenApiInfo
+        {
+            Title = "Policy Manager API",
+            Version = ApiVersions.V1
+        });
     });
 }
 

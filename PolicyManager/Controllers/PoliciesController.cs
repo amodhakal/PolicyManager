@@ -1,4 +1,6 @@
+using Asp.Versioning;
 using Microsoft.AspNetCore.Mvc;
+using PolicyManager.Configuration;
 using PolicyManager.DTOs;
 using PolicyManager.Models.Enums;
 using PolicyManager.Services;
@@ -14,6 +16,11 @@ namespace PolicyManager.Controllers;
 /// </remarks>
 [ApiController]
 [Route("api/[controller]")]
+// The unversioned route is kept, not replaced. It is what every existing client already calls, and
+// it resolves to 1.0 because the default version is assumed when none is supplied. Replacing it
+// would be a breaking change dressed up as a version introduction.
+[Route("api/v{version:apiVersion}/[controller]")]
+[ApiVersion(ApiVersions.V1)]
 public class PoliciesController(IPoliciesService policiesService) : ControllerBase
 {
     /// <summary>

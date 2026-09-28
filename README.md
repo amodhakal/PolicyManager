@@ -453,6 +453,59 @@ it, so they stayed invisible to every list reader until the entry expired.
 
 ---
 
+## API Versioning
+
+Every controller is tagged `[ApiVersion("1.0")]` and reachable at two URLs:
+
+```
+/api/policies             ← unversioned, means 1.0
+/api/v1.0/policies        ← explicitly versioned
+/api/policies?api-version=1.0
+```
+
+### The unversioned route is kept, not replaced
+
+This is the important part. The versioned template is *added alongside* the existing route rather
+than substituted for it, and `AssumeDefaultVersionWhenUnspecified` makes a request with no version
+resolve to 1.0. A client that never sends a version keeps working, unchanged — introducing a version
+is not a breaking change. Replacing `/api/policies` with `/api/v1/policies` would have been a
+breaking change dressed up as a version introduction.
+
+### Discovery
+
+`ReportApiVersions` puts `api-supported-versions: 1.0` on every response, so a client learns what a
+deployment supports from a single call rather than from documentation it has to trust to be current.
+
+Swagger is one document per version (`/swagger/v1.0/swagger.json`), so a diff between two of them is
+exactly the surface change in that version and nothing else.
+
+### Rejecting a version that does not exist
+
+| Request | Status | Why |
+| --- | --- | --- |
+| `/api/v2.0/policies` | **404** | The version segment is part of the route. No version declares it, so no route matches, and the request is indistinguishable from a path that does not exist. |
+| `/api/policies?api-version=2.0` | **400** | The route matched. The resource was found and the only fault is the parameter. |
+| `/api/policies?api-version=2.0` when 1.0 is the only version | **400** | Never silently downgraded. Serving 1.0 to a caller that asked for 2.0 would hand it a contract it is not expecting with no way to tell. |
+
+### Adding a version
+
+1. Add the constant to `ApiVersions`.
+2. Add a second `[ApiVersion]` attribute to the controllers that support it, and a `SwaggerDoc` for
+   it in `Program.cs`.
+3. Add a second route template with a distinct prefix, or a distinct controller — do not change the
+   meaning of the 1.0 template.
+
+`ApiVersioningTests` asserts that every controller declares a version, because a controller that
+forgets is not a compile error: it is a set of routes that silently stop being reachable through the
+versioned template.
+
+### Known limitation
+
+Controllers are shared across versions, so a v2 that needs a different response shape cannot get one
+without introducing versioned DTOs. That is the right trade at this size — one set of DTOs and one
+set of tests — but it is a constraint, and it is the thing to revisit first when a v2 actually needs
+to differ.
+
 ## Rate Limiting and Request Size Limits
 
 Both are configured under `RateLimiting` in `appsettings.json` and can be overridden per environment
