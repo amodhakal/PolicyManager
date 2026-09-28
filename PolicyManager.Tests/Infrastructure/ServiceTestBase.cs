@@ -1,4 +1,5 @@
 using Microsoft.EntityFrameworkCore;
+using Microsoft.EntityFrameworkCore.Diagnostics;
 using PolicyManager.Data;
 using PolicyManager.Models;
 
@@ -17,6 +18,9 @@ public abstract class ServiceTestBase : IDisposable
     {
         var options = new DbContextOptionsBuilder<AppDbContext>()
             .UseInMemoryDatabase(Guid.NewGuid().ToString())
+            // The outbox helpers wrap the entity write and the message write in an explicit transaction. The in-memory
+            // store has no transactions, so it raises this warning instead; it is expected here and must not throw.
+            .ConfigureWarnings(w => w.Ignore(InMemoryEventId.TransactionIgnoredWarning))
             .Options;
 
         Context = new AppDbContext(options);
