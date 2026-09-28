@@ -17,10 +17,13 @@ namespace PolicyManager.Services;
 ///     behaviour — claiming, retry, dead-lettering — reachable from a test without starting a host.
 ///     </para>
 ///     <para>
-///     Claiming is a two-step read-then-conditional-update. The read narrows the table to plausible
-///     candidates; the update is a single statement that only touches rows no other processor currently
-///     holds, so exactly one instance wins each row. The read alone would not be safe, and an
-///     unconditional update would let two instances claim the same message.
+///     Every write here goes through <c>ExecuteUpdateAsync</c> and every read through
+///     <c>AsNoTracking</c>, deliberately. <c>ExecuteUpdateAsync</c> bypasses the change tracker, so a
+///     tracked query issued after it returns the <em>stale</em> already-tracked instance rather than
+///     the row that was just written. Mutating that instance silently updates nothing: nulling a value
+///     the tracker already believes is null produces no UPDATE, so a released claim would stay held and
+///     the message would never be retried. Coordinating entirely through the database removes that
+///     class of bug rather than working around it.
 ///     </para>
 /// </remarks>
 public class OutboxDispatcher(
@@ -47,22 +50,25 @@ public class OutboxDispatcher(
 
         foreach (var message in claimed)
         {
-            if (await TryPublishAsync(message, now, cancellationToken)) delivered++;
+            var outcome = await PublishAsync(message, now, cancellationToken);
+            await RecordOutcomeAsync(message, outcome, now, cancellationToken);
+            if (outcome.WasDelivered) delivered++;
         }
 
-        await context.SaveChangesAsync(cancellationToken);
         return delivered;
     }
 
     /// <summary>
     ///     Atomically reserves up to one batch of due messages for this processor instance.
     /// </summary>
+    /// <returns>The messages this instance now holds, read fresh from the database.</returns>
     private async Task<List<OutboxMessage>> ClaimBatchAsync(DateTime now, CancellationToken cancellationToken)
     {
         var lockToken = Guid.NewGuid();
         var lockExpiry = now.Add(_options.LockDuration);
 
         var candidateIds = await context.OutboxMessages
+            .AsNoTracking()
             .Where(m => m.ProcessedAt == null
                         && m.DeadLetteredAt == null
                         && (m.NextAttemptAt == null || m.NextAttemptAt <= now)
@@ -89,64 +95,114 @@ public class OutboxDispatcher(
                 cancellationToken);
 
         return await context.OutboxMessages
+            .AsNoTracking()
             .Where(m => m.LockToken == lockToken)
             .OrderBy(m => m.CreatedAt)
             .ToListAsync(cancellationToken);
     }
 
     /// <summary>
-    ///     Publishes one claimed message and records success, a scheduled retry, or a dead letter.
+    ///     Publishes one claimed message and decides what should happen to it.
     /// </summary>
-    /// <returns>True when the message was delivered.</returns>
-    private async Task<bool> TryPublishAsync(OutboxMessage message, DateTime now, CancellationToken cancellationToken)
+    /// <param name="message">The claimed message.</param>
+    /// <param name="now">The current time, from the injected clock, used to schedule the retry.</param>
+    /// <param name="cancellationToken">Token used to cancel the operation.</param>
+    /// <returns>The outcome to persist. Nothing is written here.</returns>
+    private async Task<Outcome> PublishAsync(
+        OutboxMessage message,
+        DateTime now,
+        CancellationToken cancellationToken)
     {
         try
         {
             await publisher.PublishAsync(message, cancellationToken);
-
-            message.ProcessedAt = now;
-            message.Error = null;
-            message.NextAttemptAt = null;
-            ReleaseClaim(message);
-            return true;
+            return Outcome.Succeeded(message.AttemptCount);
         }
         catch (Exception ex) when (ex is not OperationCanceledException || !cancellationToken.IsCancellationRequested)
         {
-            message.AttemptCount++;
-            message.Error = ex.Message;
-            ReleaseClaim(message);
+            var attempts = message.AttemptCount + 1;
 
-            if (message.AttemptCount >= _options.MaxAttempts)
+            if (attempts >= _options.MaxAttempts)
             {
-                message.DeadLetteredAt = now;
-                message.NextAttemptAt = null;
                 logger.LogError(
                     ex,
                     "Outbox message {MessageId} of type {MessageType} dead-lettered after {AttemptCount} attempts.",
                     message.Id,
                     message.Type,
-                    message.AttemptCount);
-            }
-            else
-            {
-                var delay = _options.GetRetryDelay(message.AttemptCount);
-                message.NextAttemptAt = now.Add(delay);
-                logger.LogWarning(
-                    ex,
-                    "Outbox message {MessageId} of type {MessageType} failed on attempt {AttemptCount}; retrying in {RetryDelay}.",
-                    message.Id,
-                    message.Type,
-                    message.AttemptCount,
-                    delay);
+                    attempts);
+
+                return Outcome.DeadLetter(attempts, ex.Message);
             }
 
-            return false;
+            var delay = _options.GetRetryDelay(attempts);
+
+            logger.LogWarning(
+                ex,
+                "Outbox message {MessageId} of type {MessageType} failed on attempt {AttemptCount}; retrying in {RetryDelay}.",
+                message.Id,
+                message.Type,
+                attempts,
+                delay);
+
+            return Outcome.Retry(attempts, ex.Message, now.Add(delay));
         }
     }
 
-    private static void ReleaseClaim(OutboxMessage message)
+    /// <summary>
+    ///     Writes the outcome back and releases the claim, in one statement.
+    /// </summary>
+    private Task RecordOutcomeAsync(
+        OutboxMessage message,
+        Outcome outcome,
+        DateTime now,
+        CancellationToken cancellationToken)
     {
-        message.LockToken = null;
-        message.LockedUntil = null;
+        var processedAt = outcome.WasDelivered ? now : (DateTime?)null;
+        var deadLetteredAt = outcome.IsDeadLettered ? now : (DateTime?)null;
+        var releasedToken = (Guid?)null;
+        var releasedLock = (DateTime?)null;
+        var error = outcome.Error;
+        var nextAttemptAt = outcome.NextAttemptAt;
+        var attemptCount = outcome.AttemptCount;
+
+        // Guarded on still holding the claim. If the lease expired and another instance took the
+        // message while this one was publishing, the outcome is dropped rather than overwriting a
+        // claim this instance no longer owns.
+        return context.OutboxMessages
+            .Where(m => m.Id == message.Id && m.LockToken == message.LockToken)
+            .ExecuteUpdateAsync(
+                setters => setters
+                    .SetProperty(m => m.ProcessedAt, processedAt)
+                    .SetProperty(m => m.Error, error)
+                    .SetProperty(m => m.AttemptCount, attemptCount)
+                    .SetProperty(m => m.NextAttemptAt, nextAttemptAt)
+                    .SetProperty(m => m.DeadLetteredAt, deadLetteredAt)
+                    .SetProperty(m => m.LockToken, releasedToken)
+                    .SetProperty(m => m.LockedUntil, releasedLock),
+                cancellationToken);
+    }
+
+    /// <summary>
+    ///     What should become of a message after one delivery attempt.
+    /// </summary>
+    /// <param name="WasDelivered">Whether the message reached the broker.</param>
+    /// <param name="AttemptCount">Total attempts made, including this one.</param>
+    /// <param name="Error">The failure message, or null on success.</param>
+    /// <param name="NextAttemptAt">When to retry, or null if it should not be retried.</param>
+    /// <param name="IsDeadLettered">Whether the attempt budget is exhausted.</param>
+    private sealed record Outcome(
+        bool WasDelivered,
+        int AttemptCount,
+        string? Error,
+        DateTime? NextAttemptAt,
+        bool IsDeadLettered)
+    {
+        public static Outcome Succeeded(int attempts) => new(true, attempts, null, null, false);
+
+        public static Outcome Retry(int attempts, string error, DateTime nextAttemptAt)
+            => new(false, attempts, error, nextAttemptAt, false);
+
+        public static Outcome DeadLetter(int attempts, string error)
+            => new(false, attempts, error, null, true);
     }
 }
