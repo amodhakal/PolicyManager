@@ -134,14 +134,44 @@ dotnet test
 ```
 
 The suite is xUnit, with Moq for mocking the service interfaces and the EF Core InMemory
-provider for `AppDbContext`, so it needs no SQL Server instance. Coverage is collected via
-coverlet.
+provider for `AppDbContext`, so the default run needs no SQL Server instance. Coverage is
+collected via coverlet.
+
+### SQL Server tests
+
+The InMemory provider builds its schema from the model and enforces **no unique indexes, no
+foreign keys, no column precision, no string length limits and no transactions**. A suite that
+only ever runs against it reports green while the application is broken against the database it
+actually ships with. `PolicyManager.Tests/Integration/` therefore covers the constraints that
+provider hides, against a real SQL Server started per run by
+[Testcontainers](https://dotnet.testcontainers.org/):
+
+```bash
+# Everything except the container-backed tests (the default)
+dotnet test
+
+# Only the SQL Server tests; needs a running Docker daemon
+dotnet test --filter "Category=SqlServer"
+```
+
+The container image is pinned to the same tag `compose.yaml` uses, and the schema is built by
+running the real EF migrations rather than `EnsureCreated`, so these tests also prove the
+migration scripts are valid and complete. The container is shared across the collection, so it
+starts once per run.
+
+CI splits this into three independent jobs: the InMemory suite with coverage, the
+SQL Server suite, and a `dotnet ef migrations has-pending-model-changes` check. That last one
+matters because a model change shipped without a matching migration is invisible to both test
+suites — the InMemory provider builds from the model, and the SQL Server tests would fail on a
+missing table rather than on the drift.
 
 Shared test infrastructure lives in `PolicyManager.Tests/Infrastructure/`:
 `InMemoryApiFactory` swaps the SQL Server `AppDbContext` for the InMemory provider,
-`ApiIntegrationTestBase` provides the client, lifecycle and holder/policy/claim seeding
-helpers, and `ServiceTestBase` provides a per-test `DbContext` and `Dispose` for the service
-tests. Add new tests by deriving from those rather than repeating the setup.
+`SqlServerApiFactory` repoints the application at the container and stops the outbox poller so it
+cannot drain rows a test is asserting on, `ApiIntegrationTestBase` provides the client, lifecycle
+and holder/policy/claim seeding helpers, `ServiceTestBase` provides a per-test `DbContext` and
+`Dispose` for the service tests, and `SqlServerFixture`/`SqlServerTestBase` own the container.
+Add new tests by deriving from those rather than repeating the setup.
 
 CI runs `dotnet test` on every push to `main` and on every pull request targeting `main`,
 excluding `Migrations/**` from coverage, and uploads the report to Codecov. A second,
