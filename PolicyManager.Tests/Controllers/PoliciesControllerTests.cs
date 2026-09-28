@@ -23,7 +23,7 @@ public class PoliciesControllerTests : ApiIntegrationTestBase
     public async Task CreatePolicy_ValidRequest_ReturnsId()
     {
         var holderId = await SeedHolderAsync();
-        var dto = new CreatePolicyDto { PolicyHolderId = holderId, Premium = 750m };
+        var dto = new CreatePolicyDto { PolicyHolderId = holderId, Premium = 750m, StartDate = new DateTime(2026, 1, 1), EndDate = new DateTime(2027, 1, 1) };
 
         var res = await Client.PostAsJsonAsync("/api/policies", dto);
         Assert.Equal(HttpStatusCode.Created, res.StatusCode);
