@@ -108,4 +108,127 @@ public class PolicyHoldersControllerTests : ApiIntegrationTestBase
         var response = await Client.GetAsync("/api/policyholders/99999");
         Assert.Equal(HttpStatusCode.NotFound, response.StatusCode);
     }
+
+    /// <summary>
+    ///     Creating a holder with a taken email returns 409, on every provider.
+    /// </summary>
+    /// <remarks>
+    ///     The in-memory provider enforces no unique index, so this 409 comes from the
+    ///     service-level check; on SQL Server the unique index backstops the race.
+    /// </remarks>
+    [Fact]
+    public async Task Create_DuplicateEmail_Returns409()
+    {
+        var first = await Client.PostAsJsonAsync("/api/policyholders", _createPolicyHolderDto);
+        Assert.Equal(HttpStatusCode.Created, first.StatusCode);
+
+        var duplicate = await Client.PostAsJsonAsync("/api/policyholders", _createPolicyHolderDto);
+        Assert.Equal(HttpStatusCode.Conflict, duplicate.StatusCode);
+    }
+
+    /// <summary>
+    ///     Updating a holder applies the supplied fields and leaves the rest of the record intact.
+    /// </summary>
+    [Fact]
+    public async Task Update_ValidHolder_ChangesOnlyTheSuppliedFields()
+    {
+        var id = await SeedHolderAsync(_createPolicyHolderDto);
+
+        var res = await Client.PutAsJsonAsync($"/api/policyholders/{id}",
+            new UpdatePolicyHolderDto { LastName = "Roe" });
+        Assert.Equal(HttpStatusCode.OK, res.StatusCode);
+
+        var holder = await Client.GetFromJsonAsync<PolicyHolderDto>($"/api/policyholders/{id}");
+        Assert.Equal("Jane", holder!.FirstName);
+        Assert.Equal("Roe", holder.LastName);
+        Assert.Equal(_createPolicyHolderDto.Email, holder.Email);
+    }
+
+    /// <summary>
+    ///     Updating a holder that does not exist returns 404 rather than a 200 for a write that
+    ///     changed nothing.
+    /// </summary>
+    [Fact]
+    public async Task Update_NonExistentHolder_Returns404()
+    {
+        var res = await Client.PutAsJsonAsync("/api/policyholders/99999",
+            new UpdatePolicyHolderDto { LastName = "Roe" });
+
+        Assert.Equal(HttpStatusCode.NotFound, res.StatusCode);
+    }
+
+    /// <summary>
+    ///     An update body with no fields at all is rejected instead of being silently accepted.
+    /// </summary>
+    [Fact]
+    public async Task Update_WithNoFields_Returns400()
+    {
+        var id = await SeedHolderAsync(_createPolicyHolderDto);
+
+        var res = await Client.PutAsJsonAsync($"/api/policyholders/{id}", new UpdatePolicyHolderDto());
+
+        Assert.Equal(HttpStatusCode.BadRequest, res.StatusCode);
+    }
+
+    /// <summary>
+    ///     Taking another holder's email address returns 409.
+    /// </summary>
+    [Fact]
+    public async Task Update_EmailHeldByAnotherHolder_Returns409()
+    {
+        await SeedHolderAsync(_createPolicyHolderDto);
+        var other = await SeedHolderAsync(new CreatePolicyHolderDto
+            { FirstName = "John", LastName = "Smith", Email = "john@example.com" });
+
+        var res = await Client.PutAsJsonAsync($"/api/policyholders/{other}",
+            new UpdatePolicyHolderDto { Email = _createPolicyHolderDto.Email });
+
+        Assert.Equal(HttpStatusCode.Conflict, res.StatusCode);
+    }
+
+    /// <summary>
+    ///     Deleting a holder who owns nothing removes them.
+    /// </summary>
+    [Fact]
+    public async Task Delete_UnattachedHolder_Returns200AndRemovesThem()
+    {
+        var id = await SeedHolderAsync(_createPolicyHolderDto);
+
+        var res = await Client.DeleteAsync($"/api/policyholders/{id}");
+        Assert.Equal(HttpStatusCode.OK, res.StatusCode);
+
+        var get = await Client.GetAsync($"/api/policyholders/{id}");
+        Assert.Equal(HttpStatusCode.NotFound, get.StatusCode);
+    }
+
+    /// <summary>
+    ///     Deleting a holder that does not exist returns 404.
+    /// </summary>
+    [Fact]
+    public async Task Delete_NonExistentHolder_Returns404()
+    {
+        var res = await Client.DeleteAsync("/api/policyholders/99999");
+        Assert.Equal(HttpStatusCode.NotFound, res.StatusCode);
+    }
+
+    /// <summary>
+    ///     Deleting a holder who still has policies is refused, and the policies survive.
+    /// </summary>
+    /// <remarks>
+    ///     The claims filed against those policies are financial records carrying the adjudication
+    ///     trail, so the endpoint refuses the delete rather than removing the holder's history with
+    ///     them.
+    /// </remarks>
+    [Fact]
+    public async Task Delete_HolderWithPolicies_Returns409AndKeepsThePolicies()
+    {
+        var holderId = await SeedHolderAsync(_createPolicyHolderDto);
+        var policyId = await SeedPolicyAsync(holderId);
+
+        var res = await Client.DeleteAsync($"/api/policyholders/{holderId}");
+        Assert.Equal(HttpStatusCode.Conflict, res.StatusCode);
+
+        var get = await Client.GetAsync($"/api/policies/{policyId}");
+        Assert.Equal(HttpStatusCode.OK, get.StatusCode);
+    }
 }

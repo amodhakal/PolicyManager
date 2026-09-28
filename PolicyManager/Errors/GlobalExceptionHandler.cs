@@ -94,8 +94,12 @@ public class GlobalExceptionHandler(
                 Title = "Business rule violation",
                 Detail = rule.Message,
                 Type = "https://httpstatuses.com/422",
+                // Left as the empty dictionary ProblemDetails initialises itself with when there is no
+                // rule to name. Assigning null here threw inside the ProblemDetails writer and the
+                // correlation-id customiser, so a rule-less business exception surfaced as a bare 500
+                // instead of the 422 it is.
                 Extensions = rule.Rule is null
-                    ? null
+                    ? new Dictionary<string, object?>()
                     : new Dictionary<string, object?> { ["rule"] = rule.Rule }
             },
 

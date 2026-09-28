@@ -187,14 +187,16 @@ CI without needing a database. Note that CI only runs for pull requests whose **
 | Method | Route | Description |
 |---|---|---|
 | `GET` | `/api/policyholders` | List a page of policyholders; supports `?page=`, `?pageSize=`, `?sortBy=`, `?descending=` |
-| `POST` | `/api/policyholders` | Create a policyholder |
+| `POST` | `/api/policyholders` | Create a policyholder; a duplicate email is a 409 |
 | `GET` | `/api/policyholders/{id}` | Get by ID |
+| `PUT` | `/api/policyholders/{id}` | Update `firstName`, `lastName` or `email`; omitted fields are left alone |
+| `DELETE` | `/api/policyholders/{id}` | Delete a holder who owns no policies; a holder with policies is a 409 |
 
 ### Policies
 | Method | Route | Description |
 |---|---|---|
 | `GET` | `/api/policies` | List a page of policies; supports `?status=Active` and the paging/sorting options |
-| `POST` | `/api/policies` | Create a policy linked to a policyholder |
+| `POST` | `/api/policies` | Create a policy linked to a policyholder; an unknown holder is a 404 |
 | `GET` | `/api/policies/{id}` | Get with policyholder info |
 | `PUT` | `/api/policies/{id}` | Update status or premium |
 | `DELETE` | `/api/policies/{id}` | Soft delete, sets status to `Cancelled` |
@@ -422,8 +424,18 @@ Single policyholder reads (`GET /api/policyholders/{id}`) are served from an in-
 `IMemoryCache`. Keys are centralised in `PolicyManager/Models/CacheKeys.cs` rather than being
 built as string literals at each call site. The cache is registered with a 10 MiB `SizeLimit`,
 and **every** entry declares an explicit `Size` — once a `SizeLimit` is configured,
-`MemoryCache` throws if any entry omits it. Entries are held at `CacheItemPriority.High`, and
-`Create` invalidates the key for the identifier it was given.
+`MemoryCache` throws if any entry omits it. Entries are held at `CacheItemPriority.High`.
+
+**A write generation is part of every per-holder key.** Evicting a key on write is not enough on
+its own: a read that starts before the write and finishes after it has already read the old row,
+and putting that row back under the key the write just evicted resurrects it for the whole cache
+lifetime — an update that reports success and is then invisible, or a `DELETE` that still answers
+`GET`. So the key is `policyholders:{id}:g{generation}`, and every write advances that holder's
+generation in `PolicyHolderWriteGenerations` *after* its transaction commits. A late reader then
+writes to a key no reader will ask for again — wasted memory rather than a stale answer — and a
+reader that starts after the bump reads a generation whose commit is already visible. The counter
+is a process-wide singleton and deliberately not held in `IMemoryCache`: an evicted generation
+would restart at zero and make a long-dead key reachable again.
 
 **The list endpoint is not cached, and the former `policyholders:all` entry is gone.** A
 paginated read cannot use a cached full table: serving one page out of it still holds every row

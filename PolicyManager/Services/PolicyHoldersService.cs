@@ -3,6 +3,7 @@ using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Caching.Memory;
 using PolicyManager.Data;
 using PolicyManager.DTOs;
+using PolicyManager.Exceptions;
 using PolicyManager.Models;
 
 namespace PolicyManager.Services;
@@ -10,7 +11,10 @@ namespace PolicyManager.Services;
 /// <summary>
 ///     Service implementation for managing policyholders with caching and transactional outbox support.
 /// </summary>
-public class PolicyHoldersService(AppDbContext context, IMemoryCache cache) : IPolicyHoldersService
+public class PolicyHoldersService(
+    AppDbContext context,
+    IMemoryCache cache,
+    PolicyHolderWriteGenerations generations) : IPolicyHoldersService
 {
     /// <summary>
     ///     Approximate managed-memory footprint, in bytes, of one <see cref="PolicyHolderDto" />: a 16-byte object
@@ -113,12 +117,19 @@ public class PolicyHoldersService(AppDbContext context, IMemoryCache cache) : IP
     /// <summary>
     ///     Retrieves a policyholder by their unique identifier.
     /// </summary>
+    /// <remarks>
+    ///     The generation is read once, before the database is consulted, and the key it produces is
+    ///     the only one written to. A write that commits while this read is in flight advances the
+    ///     generation, so the value this read goes on to cache lands under a key nothing will ask for
+    ///     again. Reading it again afterwards to build the key would reopen the race: the key would
+    ///     then name a generation whose commit the reader had never seen.
+    /// </remarks>
     /// <param name="id">The policyholder identifier.</param>
     /// <param name="cancellationToken">Token used to cancel the operation.</param>
     /// <returns>The policyholder if found; otherwise, null.</returns>
     public async Task<PolicyHolderDto?> GetById(int id, CancellationToken cancellationToken = default)
     {
-        var key = CacheKeys.ById(id);
+        var key = CacheKeys.ById(id, generations.Current(id));
         if (cache.TryGetValue(key, out PolicyHolderDto? cached)) return cached;
 
         var holder = await context.PolicyHolders.Where(p => p.Id == id)
@@ -140,14 +151,29 @@ public class PolicyHoldersService(AppDbContext context, IMemoryCache cache) : IP
     ///     Creates a new policyholder and records an outbox message transactionally.
     /// </summary>
     /// <remarks>
-    ///     Only the single-holder key is invalidated. There is no list entry to evict any more, so a
-    ///     write from outside this service can no longer be masked by a stale collection.
+    ///     The email is checked first so a duplicate is a 409 naming the address on every provider,
+    ///     including the in-memory one, which enforces no unique index. The unique index stays as the
+    ///     backstop for races between the check and the insert, and the handler maps its violation to
+    ///     the same 409.
+    ///     <para>
+    ///     Nothing is cached here, so nothing needs evicting: the row is new, and the identity a
+    ///     cached read would have looked up has no cached entry to be stale. The generation is still
+    ///     advanced so that an in-flight read for the identifier - possible once an identity has been
+    ///     reused, or against a row deleted and recreated - cannot leave an entry that a later read
+    ///     of this id would treat as its own.
+    ///     </para>
     /// </remarks>
     /// <param name="dto">The policyholder data transfer object.</param>
     /// <param name="cancellationToken">Token used to cancel the operation.</param>
     /// <returns>The unique identifier of the newly created policyholder.</returns>
+    /// <exception cref="ConflictException">A policyholder with the same email already exists.</exception>
     public async Task<int> Create(CreatePolicyHolderDto dto, CancellationToken cancellationToken = default)
     {
+        var normalizedEmail = dto.Email.ToLowerInvariant();
+        var emailTaken = await context.PolicyHolders
+            .AnyAsync(h => h.Email.ToLower() == normalizedEmail, cancellationToken);
+        if (emailTaken) throw new ConflictException($"A policyholder with email '{dto.Email}' already exists.");
+
         var holder = new PolicyHolder
             { FirstName = dto.FirstName, LastName = dto.LastName, Email = dto.Email };
 
@@ -157,7 +183,86 @@ public class PolicyHoldersService(AppDbContext context, IMemoryCache cache) : IP
             h => new { h.Id, h.FirstName, h.LastName, h.Email },
             cancellationToken);
 
-        cache.Remove(CacheKeys.ById(holder.Id));
+        generations.Advance(holder.Id);
         return holder.Id;
+    }
+
+    /// <summary>
+    ///     Updates an existing policyholder, applying only the fields the caller supplied.
+    /// </summary>
+    /// <remarks>
+    ///     The generation is advanced after the transaction commits, not before. Before the commit the
+    ///     database still answers with the old row, so a reader that took the new generation would
+    ///     cache that old row under a key that stays live - the staleness this ordering exists to
+    ///     prevent. After the commit, every reader on the new generation reads the new row.
+    /// </remarks>
+    /// <param name="id">The policyholder identifier.</param>
+    /// <param name="dto">The fields to change. A null field is left as it is.</param>
+    /// <param name="cancellationToken">Token used to cancel the operation.</param>
+    /// <exception cref="NotFoundException">The policyholder does not exist.</exception>
+    /// <exception cref="ConflictException">Another policyholder already holds the supplied email.</exception>
+    public async Task Update(
+        int id, UpdatePolicyHolderDto dto, CancellationToken cancellationToken = default)
+    {
+        var holder = await context.PolicyHolders.FindAsync([id], cancellationToken)
+            ?? throw new NotFoundException("PolicyHolder", id);
+
+        if (dto.Email is not null && !string.Equals(dto.Email, holder.Email, StringComparison.OrdinalIgnoreCase))
+        {
+            var normalizedEmail = dto.Email.ToLowerInvariant();
+            var emailTaken = await context.PolicyHolders
+                .AnyAsync(h => h.Id != id && h.Email.ToLower() == normalizedEmail, cancellationToken);
+            if (emailTaken) throw new ConflictException($"A policyholder with email '{dto.Email}' already exists.");
+        }
+
+        if (dto.FirstName is not null) holder.FirstName = dto.FirstName;
+        if (dto.LastName is not null) holder.LastName = dto.LastName;
+        if (dto.Email is not null) holder.Email = dto.Email;
+
+        await context.SaveWithOutboxAsync(
+            holder,
+            "PolicyHolderUpdated",
+            h => new { h.Id, h.FirstName, h.LastName, h.Email },
+            cancellationToken);
+
+        generations.Advance(id);
+    }
+
+    /// <summary>
+    ///     Deletes a policyholder who owns no policies, and records an outbox message transactionally.
+    /// </summary>
+    /// <remarks>
+    ///     Policies are refused rather than removed. A claim is a financial record carrying the
+    ///     adjudication trail, and the foreign keys restrict for exactly that reason: a holder with
+    ///     claims could never be deleted without destroying them. Rejecting a holder who merely has
+    ///     policies is the same rule one step earlier - it keeps the caller from discovering it as an
+    ///     opaque constraint violation, and it gives them the choice the API already offers for a
+    ///     policy, which is to cancel it.
+    /// </remarks>
+    /// <param name="id">The policyholder identifier.</param>
+    /// <param name="cancellationToken">Token used to cancel the operation.</param>
+    /// <exception cref="NotFoundException">The policyholder does not exist.</exception>
+    /// <exception cref="ConflictException">The policyholder still owns policies.</exception>
+    public async Task Delete(int id, CancellationToken cancellationToken = default)
+    {
+        var holder = await context.PolicyHolders.FindAsync([id], cancellationToken)
+            ?? throw new NotFoundException("PolicyHolder", id);
+
+        var policyCount = await context.Policies.CountAsync(p => p.PolicyHolderId == id, cancellationToken);
+        if (policyCount > 0)
+        {
+            throw new ConflictException(
+                $"Policyholder '{id}' still owns {policyCount} policy/policies. Cancel them before deleting the holder.");
+        }
+
+        context.Remove(holder);
+
+        await context.SaveWithOutboxAsync(
+            holder,
+            "PolicyHolderDeleted",
+            h => new { h.Id, h.FirstName, h.LastName, h.Email },
+            cancellationToken);
+
+        generations.Advance(id);
     }
 }

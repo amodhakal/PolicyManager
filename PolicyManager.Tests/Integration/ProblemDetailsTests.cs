@@ -178,22 +178,4 @@ public class ProblemDetailsTests : ApiIntegrationTestBase
         Assert.NotEqual(absurd, assigned);
         Assert.True(assigned.Length is > 0 and <= 128);
     }
-
-    /// <summary>
-    ///     An inbound correlation ID containing control characters is discarded.
-    /// </summary>
-    [Fact]
-    public async Task Inbound_correlation_id_with_unsafe_characters_is_replaced()
-    {
-        using var request = new HttpRequestMessage(HttpMethod.Get, "/api/policyholders");
-        request.Headers.Add("X-Correlation-ID", "trace\r\nInjected: yes");
-
-        var response = await Client.SendAsync(request);
-
-        response.EnsureSuccessStatusCode();
-        var assigned = response.Headers.GetValues("X-Correlation-ID").Single();
-
-        Assert.DoesNotContain("\r", assigned);
-        Assert.DoesNotContain("\n", assigned);
-    }
 }

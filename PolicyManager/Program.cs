@@ -11,6 +11,7 @@ using PolicyManager.Data;
 using PolicyManager.Errors;
 using PolicyManager.Health;
 using PolicyManager.Middleware;
+using PolicyManager.Models;
 using PolicyManager.Services;
 
 var environmentName = ResolveEnvironmentName(args);
@@ -65,6 +66,10 @@ builder.Services.AddHealthChecks()
 builder.Services.Configure<OutboxOptions>(builder.Configuration.GetSection(OutboxOptions.SectionName));
 
 
+// The write generation is process-wide state, not per request: it has to be shared by the reader
+// and the writer that race each other, and those are always different requests. Scoping it would
+// give every request its own generation, so every key a request built would be its own.
+builder.Services.AddSingleton<PolicyHolderWriteGenerations>();
 builder.Services.AddScoped<IPolicyHoldersService, PolicyHoldersService>();
 builder.Services.AddScoped<IPoliciesService, PoliciesService>();
 builder.Services.AddScoped<IClaimsService, ClaimsService>();

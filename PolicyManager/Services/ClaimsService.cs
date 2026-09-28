@@ -140,7 +140,8 @@ public class ClaimsService(AppDbContext context) : IClaimsService
         ClaimRules.EnsurePolicyAcceptsClaims(policy);
 
         var alreadyClaimed = await context.Claims
-            .Where(c => c.PolicyId == policy.Id && IsRecognisedAgainstCoverage(c))
+            .Where(c => c.PolicyId == policy.Id)
+            .Where(IsRecognisedAgainstCoverage)
             .SumAsync(c => (decimal?)c.Amount, cancellationToken) ?? 0m;
 
         ClaimRules.EnsureWithinCoverage(policy, dto.Amount, alreadyClaimed);
@@ -214,6 +215,13 @@ public class ClaimsService(AppDbContext context) : IClaimsService
     ///     Pending and approved claims both reserve value that can still be paid out; only a denied
     ///     claim releases it. Counting only approved claims would let a caller file unlimited pending
     ///     claims against an exhausted policy and have every one denied afterwards.
+    ///     <para>
+    ///     Held as an <see cref="Expression{TDelegate}" /> rather than a method because the predicate is
+    ///     used inside a <c>Where</c>: EF translates the expression tree it is handed, but it cannot
+    ///     translate a call to a method, so the filter was being rejected and every claim creation
+    ///     failed with an untranslated-lambda 500.
+    ///     </para>
     /// </remarks>
-    private static bool IsRecognisedAgainstCoverage(Claim claim) => claim.Status != ClaimStatus.Denied;
+    private static readonly Expression<Func<Claim, bool>> IsRecognisedAgainstCoverage
+        = claim => claim.Status != ClaimStatus.Denied;
 }

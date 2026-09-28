@@ -57,7 +57,8 @@ public class PolicyHoldersController(IPolicyHoldersService policyHoldersService)
     /// <param name="cancellationToken">Token used to cancel the operation.</param>
     /// <returns>A created result whose body is the new policyholder.</returns>
     /// <response code="201">policyholder created successfully.</response>
-    /// <response code="400">Invalid input or duplicate email.</response>
+    /// <response code="400">Invalid input.</response>
+    /// <response code="409">A policyholder with the same email already exists.</response>
     [HttpPost]
     public async Task<ActionResult<PolicyHolderDto>> Create(
         CreatePolicyHolderDto dto, CancellationToken cancellationToken)
@@ -65,5 +66,47 @@ public class PolicyHoldersController(IPolicyHoldersService policyHoldersService)
         var holderId = await policyHoldersService.Create(dto, cancellationToken);
         var holder = await policyHoldersService.GetById(holderId, cancellationToken);
         return CreatedAtAction(nameof(GetById), new { id = holderId }, holder);
+    }
+
+    /// <summary>
+    ///     Updates an existing policyholder, applying only the fields supplied.
+    /// </summary>
+    /// <remarks>
+    ///     A field omitted from the body is left alone. Supplying none at all is a 400 rather than a
+    ///     silent no-op reported as success.
+    /// </remarks>
+    /// <param name="id">The policyholder identifier.</param>
+    /// <param name="dto">The policyholder fields to change.</param>
+    /// <param name="cancellationToken">Token used to cancel the operation.</param>
+    /// <returns>No content body if successful.</returns>
+    /// <response code="200">Policyholder updated successfully.</response>
+    /// <response code="400">No field supplied, or a field is blank.</response>
+    /// <response code="404">policyholder not found.</response>
+    /// <response code="409">Another policyholder already holds the supplied email.</response>
+    [HttpPut("{id:int}")]
+    public async Task<ActionResult> Update(int id, UpdatePolicyHolderDto dto, CancellationToken cancellationToken)
+    {
+        await policyHoldersService.Update(id, dto, cancellationToken);
+        return Ok();
+    }
+
+    /// <summary>
+    ///     Deletes a policyholder who owns no policies.
+    /// </summary>
+    /// <remarks>
+    ///     A holder who still has policies is a 409 rather than a silent removal of them: their claims
+    ///     are financial records and are not destroyed by a contact-record change.
+    /// </remarks>
+    /// <param name="id">The policyholder identifier.</param>
+    /// <param name="cancellationToken">Token used to cancel the operation.</param>
+    /// <returns>No content body if successful.</returns>
+    /// <response code="200">Policyholder deleted successfully.</response>
+    /// <response code="404">policyholder not found.</response>
+    /// <response code="409">The policyholder still owns policies.</response>
+    [HttpDelete("{id:int}")]
+    public async Task<ActionResult> Delete(int id, CancellationToken cancellationToken)
+    {
+        await policyHoldersService.Delete(id, cancellationToken);
+        return Ok();
     }
 }

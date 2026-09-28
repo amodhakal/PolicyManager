@@ -196,12 +196,50 @@ public class PoliciesControllerTests : ApiIntegrationTestBase
     }
 
     /// <summary>
-    ///     Cancelling a non-existent policy does not return a 5xx — service swallows it.
+    ///     Updating a non-existent policy returns 404, not a 200 for a write that changed nothing.
     /// </summary>
     [Fact]
-    public async Task Cancel_NonExistentId_DoesNotReturn5xx()
+    public async Task Update_NonExistentId_Returns404()
+    {
+        var res = await Client.PutAsJsonAsync("/api/policies/99999",
+            new UpdatePolicyDto { Premium = 100m, Status = PolicyStatus.Expired });
+
+        Assert.Equal(HttpStatusCode.NotFound, res.StatusCode);
+    }
+
+    /// <summary>
+    ///     Cancelling a non-existent policy returns 404.
+    /// </summary>
+    /// <remarks>
+    ///     This asserted only <c>&lt; 500</c>, which the broken behaviour satisfied: the service
+    ///     returned without writing and the controller replied 200. The documented contract is 404,
+    ///     so that is what is asserted.
+    /// </remarks>
+    [Fact]
+    public async Task Cancel_NonExistentId_Returns404()
     {
         var res = await Client.DeleteAsync("/api/policies/99999");
-        Assert.True((int)res.StatusCode < 500);
+        Assert.Equal(HttpStatusCode.NotFound, res.StatusCode);
+    }
+
+    /// <summary>
+    ///     Creating a policy for a holder that does not exist returns 404.
+    /// </summary>
+    /// <remarks>
+    ///     The reference is part of a well-formed request, so the caller has nothing to fix beyond
+    ///     the identifier - which is what distinguishes this from the 409 a constraint violation
+    ///     would have produced.
+    /// </remarks>
+    [Fact]
+    public async Task Create_NonExistentHolder_Returns404()
+    {
+        var res = await Client.PostAsJsonAsync("/api/policies",
+            new CreatePolicyDto
+            {
+                Type = Models.Enums.PolicyType.Auto, PolicyHolderId = 99999, Premium = 500m,
+                StartDate = new DateTime(2026, 1, 1), EndDate = new DateTime(2027, 1, 1)
+            });
+
+        Assert.Equal(HttpStatusCode.NotFound, res.StatusCode);
     }
 }

@@ -145,4 +145,20 @@ public class ClaimsControllerTests : ApiIntegrationTestBase
         var dto = await getRes.Content.ReadFromJsonAsync<ClaimDto>();
         Assert.Equal(ClaimStatus.Approved, dto!.Status);
     }
+
+    /// <summary>
+    ///     Adjudicating a claim that does not exist returns 404.
+    /// </summary>
+    /// <remarks>
+    ///     The PATCH had no coverage for a missing claim, so the endpoint's 404 was documented and
+    ///     unverified - the same gap that let the policy endpoints answer 200 for a missing policy.
+    /// </remarks>
+    [Fact]
+    public async Task UpdateStatus_NonExistentClaim_Returns404()
+    {
+        var res = await Client.PatchAsJsonAsync("/api/claims/99999/status",
+            new UpdateClaimStatusDto { Status = ClaimStatus.Approved });
+
+        Assert.Equal(HttpStatusCode.NotFound, res.StatusCode);
+    }
 }

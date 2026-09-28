@@ -1,8 +1,10 @@
 using System.Text.Json;
+using Microsoft.Data.SqlClient;
 using Microsoft.EntityFrameworkCore;
 using PolicyManager.Data;
 using PolicyManager.DTOs;
 using PolicyManager.Models;
+using PolicyManager.Models.Enums;
 using PolicyManager.Services;
 using PolicyManager.Tests.Infrastructure;
 
@@ -24,6 +26,11 @@ namespace PolicyManager.Tests.Integration;
 [Collection(SqlServerCollection.Name)]
 public class SqlServerConstraintTests : SqlServerTestBase
 {
+    /// <summary>
+    ///     SQL Server's error number for a foreign key constraint violation.
+    /// </summary>
+    private const int ForeignKeyViolation = 547;
+
     /// <summary>
     ///     Initializes a new instance of the <see cref="SqlServerConstraintTests" /> class.
     /// </summary>
@@ -66,8 +73,130 @@ public class SqlServerConstraintTests : SqlServerTestBase
             StartDate = new DateTime(2026, 1, 1), EndDate = new DateTime(2027, 1, 1)
         });
 
-        // Nothing checks the holder exists in code, so only the foreign key stops this insert.
+        // The service checks the holder exists before inserting, so this is now the race backstop:
+        // the only way to reach it is for the holder to disappear between the check and the write.
         await Assert.ThrowsAsync<DbUpdateException>(() => context.SaveChangesAsync());
+    }
+
+    /// <summary>
+    ///     Deleting a policyholder who still has claims is refused, and nothing is destroyed.
+    /// </summary>
+    /// <remarks>
+    ///     This is the cascade that was destroying financial records. The claim carries the
+    ///     adjudication trail - who decided, when, and why - so losing it to a contact-record delete
+    ///     loses the audit history with no record that it ever existed. The refusal can come from the
+    ///     change tracker (which will not sever a required relationship) or from the database; either
+    ///     way nothing is written, and what matters is that the rows are all still there afterwards.
+    /// </remarks>
+    [Fact]
+    public async Task Deleting_a_holder_with_claims_is_refused_and_nothing_is_destroyed()
+    {
+        await using var context = CreateContext();
+        var (holderId, claimId) = await SeedHolderPolicyAndClaimAsync(context);
+
+        var failure = await Record.ExceptionAsync(async () =>
+        {
+            context.PolicyHolders.Remove(context.PolicyHolders.Local.Single(h => h.Id == holderId));
+            await context.SaveChangesAsync();
+        });
+
+        Assert.NotNull(failure);
+        context.ChangeTracker.Clear();
+
+        Assert.Equal(ClaimStatus.Approved, await context.Claims.AsNoTracking()
+            .Where(c => c.Id == claimId).Select(c => c.Status).SingleAsync());
+        Assert.Equal(1, await context.PolicyHolders.CountAsync());
+        Assert.Equal(1, await context.Policies.CountAsync());
+    }
+
+    /// <summary>
+    ///     The database itself rejects the delete, not only the change tracker.
+    /// </summary>
+    /// <remarks>
+    ///     Issued as raw SQL so the claim about the schema is tested directly. Anything going through
+    ///     the context can be refused client-side, which would leave a test passing against a schema
+    ///     that had no constraint at all - the case the in-memory provider can never catch and the
+    ///     reason these tests run against a real server.
+    /// </remarks>
+    [Fact]
+    public async Task The_foreign_key_rejects_a_holder_delete_bypassing_the_change_tracker()
+    {
+        await using var context = CreateContext();
+        var (holderId, claimId) = await SeedHolderPolicyAndClaimAsync(context);
+
+        var failure = await Assert.ThrowsAsync<SqlException>(() =>
+            context.Database.ExecuteSqlRawAsync("DELETE FROM [PolicyHolders] WHERE [Id] = {0}", holderId));
+
+        Assert.Equal(ForeignKeyViolation, failure.Number);
+        Assert.True(await context.Claims.AsNoTracking().AnyAsync(c => c.Id == claimId));
+    }
+
+    /// <summary>
+    ///     The database itself rejects deleting a policy out from under its claims.
+    /// </summary>
+    [Fact]
+    public async Task The_foreign_key_rejects_a_policy_delete_bypassing_the_change_tracker()
+    {
+        await using var context = CreateContext();
+        var (_, claimId) = await SeedHolderPolicyAndClaimAsync(context);
+        var policyId = await context.Claims.AsNoTracking().Where(c => c.Id == claimId)
+            .Select(c => c.PolicyId).SingleAsync();
+
+        var failure = await Assert.ThrowsAsync<SqlException>(() =>
+            context.Database.ExecuteSqlRawAsync("DELETE FROM [Policies] WHERE [Id] = {0}", policyId));
+
+        Assert.Equal(ForeignKeyViolation, failure.Number);
+        Assert.True(await context.Claims.AsNoTracking().AnyAsync(c => c.Id == claimId));
+    }
+
+    /// <summary>
+    ///     A holder with nothing attached is still deletable, so the guard blocks destruction rather
+    ///     than blocking the endpoint outright.
+    /// </summary>
+    [Fact]
+    public async Task Deleting_an_unattached_holder_is_allowed()
+    {
+        await using var context = CreateContext();
+
+        var holder = new PolicyHolder { FirstName = "Jane", LastName = "Doe", Email = "jane@example.com" };
+        context.PolicyHolders.Add(holder);
+        await context.SaveChangesAsync();
+
+        context.PolicyHolders.Remove(holder);
+        await context.SaveChangesAsync();
+
+        context.ChangeTracker.Clear();
+        Assert.Empty(await context.PolicyHolders.AsNoTracking().ToListAsync());
+    }
+
+    /// <summary>
+    ///     Seeds a policyholder, a policy under them, and one adjudicated claim against it.
+    /// </summary>
+    /// <param name="context">The context to seed through.</param>
+    /// <returns>The policyholder's identifier and the claim's identifier.</returns>
+    private static async Task<(int HolderId, int ClaimId)> SeedHolderPolicyAndClaimAsync(AppDbContext context)
+    {
+        var holder = new PolicyHolder { FirstName = "Jane", LastName = "Doe", Email = "jane@example.com" };
+        context.PolicyHolders.Add(holder);
+        await context.SaveChangesAsync();
+
+        var policy = new Policy
+        {
+            PolicyHolderId = holder.Id, Premium = 500m, Status = Models.Enums.PolicyStatus.Active,
+            Type = Models.Enums.PolicyType.Auto,
+            StartDate = new DateTime(2026, 1, 1), EndDate = new DateTime(2027, 1, 1)
+        };
+        context.Policies.Add(policy);
+        await context.SaveChangesAsync();
+
+        var claim = new Claim
+        {
+            PolicyId = policy.Id, Amount = 250m, Status = ClaimStatus.Approved, DecidedBy = "adjuster-1"
+        };
+        context.Claims.Add(claim);
+        await context.SaveChangesAsync();
+
+        return (holder.Id, claim.Id);
     }
 
     /// <summary>

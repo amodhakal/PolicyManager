@@ -2,6 +2,7 @@ using System.Linq.Expressions;
 using Microsoft.EntityFrameworkCore;
 using PolicyManager.Data;
 using PolicyManager.DTOs;
+using PolicyManager.Exceptions;
 using PolicyManager.Models;
 using PolicyManager.Models.Enums;
 
@@ -123,11 +124,21 @@ public class PoliciesService(AppDbContext context) : IPoliciesService
     /// <summary>
     ///     Creates a new policy and records an outbox message transactionally.
     /// </summary>
+    /// <remarks>
+    ///     The holder is checked first so a dangling reference is a 404 naming the missing
+    ///     holder, rather than a foreign key violation surfacing as a 409 or a 500. The
+    ///     database constraint stays as the backstop for races between the check and the insert.
+    /// </remarks>
     /// <param name="dto">The policy data transfer object.</param>
     /// <param name="cancellationToken">Token used to cancel the operation.</param>
     /// <returns>The unique identifier of the newly created policy.</returns>
+    /// <exception cref="NotFoundException">The referenced policyholder does not exist.</exception>
     public async Task<int> Create(CreatePolicyDto dto, CancellationToken cancellationToken = default)
     {
+        var holderExists = await context.PolicyHolders
+            .AnyAsync(h => h.Id == dto.PolicyHolderId, cancellationToken);
+        if (!holderExists) throw new NotFoundException("PolicyHolder", dto.PolicyHolderId);
+
         var policy = new Policy
         {
             Premium = dto.Premium,
@@ -155,10 +166,11 @@ public class PoliciesService(AppDbContext context) : IPoliciesService
     /// <param name="id">The policy identifier.</param>
     /// <param name="dto">The policy data transfer object containing updated details.</param>
     /// <param name="cancellationToken">Token used to cancel the operation.</param>
+    /// <exception cref="NotFoundException">The policy does not exist.</exception>
     public async Task Update(int id, UpdatePolicyDto dto, CancellationToken cancellationToken = default)
     {
-        var policy = await context.Policies.FindAsync([id], cancellationToken);
-        if (policy == null) return;
+        var policy = await context.Policies.FindAsync([id], cancellationToken)
+            ?? throw new NotFoundException("Policy", id);
 
         // Applied conditionally: a field the caller omitted must leave the stored value alone rather
         // than overwrite it with a type default.
@@ -177,10 +189,11 @@ public class PoliciesService(AppDbContext context) : IPoliciesService
     /// </summary>
     /// <param name="id">The policy identifier.</param>
     /// <param name="cancellationToken">Token used to cancel the operation.</param>
+    /// <exception cref="NotFoundException">The policy does not exist.</exception>
     public async Task Cancel(int id, CancellationToken cancellationToken = default)
     {
-        var policy = await context.Policies.FindAsync([id], cancellationToken);
-        if (policy == null) return;
+        var policy = await context.Policies.FindAsync([id], cancellationToken)
+            ?? throw new NotFoundException("Policy", id);
 
         policy.Status = PolicyStatus.Cancelled;
 

@@ -31,6 +31,7 @@ public interface IPoliciesService
     /// <summary>
     ///     Creates a new policy.
     /// </summary>
+    /// <exception cref="Exceptions.NotFoundException">The referenced policyholder does not exist.</exception>
     /// <param name="dto">The policy data transfer object.</param>
     /// <param name="cancellationToken">Token used to cancel the operation.</param>
     /// <returns>The unique identifier of the newly created policy.</returns>
@@ -39,6 +40,7 @@ public interface IPoliciesService
     /// <summary>
     ///     Updates an existing policy.
     /// </summary>
+    /// <exception cref="Exceptions.NotFoundException">The policy does not exist.</exception>
     /// <param name="id">The policy identifier.</param>
     /// <param name="dto">The policy data transfer object containing updated details.</param>
     /// <param name="cancellationToken">Token used to cancel the operation.</param>
@@ -47,6 +49,7 @@ public interface IPoliciesService
     /// <summary>
     ///     Cancels an existing policy by setting its status to Cancel.
     /// </summary>
+    /// <exception cref="Exceptions.NotFoundException">The policy does not exist.</exception>
     /// <param name="id">The policy identifier.</param>
     /// <param name="cancellationToken">Token used to cancel the operation.</param>
     public Task Cancel(int id, CancellationToken cancellationToken = default);
