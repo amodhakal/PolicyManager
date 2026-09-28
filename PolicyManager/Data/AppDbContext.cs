@@ -60,6 +60,14 @@ public class AppDbContext(DbContextOptions<AppDbContext> options) : DbContext(op
         modelBuilder.Entity<OutboxMessage>()
             .HasIndex(o => o.ProcessedAt);
 
+        // Serves the dispatcher's poll predicate: live, undelivered rows that are due and unclaimed.
+        // A filtered index keeps processed and dead-lettered rows out of the index entirely, so the
+        // structure stays small no matter how much history the table accumulates.
+        modelBuilder.Entity<OutboxMessage>()
+            .HasIndex(o => new { o.ProcessedAt, o.NextAttemptAt })
+            .HasFilter("[ProcessedAt] IS NULL AND [DeadLetteredAt] IS NULL")
+            .HasDatabaseName("IX_OutboxMessages_Pending");
+
         modelBuilder.Entity<Policy>()
             .HasOne(p => p.PolicyHolder)
             .WithMany(ph => ph.Policies)
