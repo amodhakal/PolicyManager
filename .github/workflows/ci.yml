@@ -45,7 +45,7 @@ jobs:
             -p:AnalysisLevel=latest \
             -p:AnalysisMode=Default \
             -p:TreatWarningsAsErrors=false \
-            -p:WarningsAsErrors="CS0105,CS0108,CS0114,CS0162,CS0164,CS8625,CA1416"
+            -p:WarningsAsErrors="CS0105%3BCS0108%3BCS0114%3BCS0162%3BCS0164%3BCS8625%3BCA1416"
 
       - name: Test with coverage
         run: |
