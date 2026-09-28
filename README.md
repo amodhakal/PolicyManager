@@ -45,11 +45,15 @@ dotnet ef database update --project PolicyManager/PolicyManager.csproj
 dotnet run --project PolicyManager/PolicyManager.csproj
 ```
 
-**Migrations are required.** The schema is managed by code-first EF Core migrations and
-nothing creates the tables for you — the API will fail to serve any request that touches
-the database until the migrations have been applied. Step 2 above is the command to run,
-from the repository root. It applies every pending migration in
-`PolicyManager/Migrations/` to the database named by `DB_NAME` in your `.env` file.
+**Migrations are required, and they are currently blocked.** The schema is managed by
+code-first EF Core migrations and nothing creates the tables for you — the API will fail to
+serve any request that touches the database until migrations have been applied. Step 2 is
+the command, run from the repository root.
+
+However, that command **fails today** with EF Core's `PendingModelChangesWarning` error,
+because the model is ahead of the last migration snapshot. See
+[Known Issues](#known-issues) below. Run `docker compose up -d db` and create the
+`PolicyManager` database by hand in the meantime if you need a working local database.
 
 To create a new migration after changing a model:
 
@@ -76,9 +80,59 @@ are then read from the process environment.
 | `DB_NAME` | `PolicyManager` | Yes | Database name for the connection string's `Database`. Must already exist for `dotnet ef database update` to target it. |
 | `DB_USER` | `SA` | Yes | SQL Server login for the connection string's `User Id`. Must match the account `DB_PASSWORD` belongs to (the Compose service creates `sa`). |
 
-The connection string is built in `Program.cs` from these four variables only; there is no
-`ConnectionStrings__*` entry in `appsettings.json` and no other environment variable is
-consumed by the app.
+The connection string lives in configuration under the standard `ConnectionStrings:DefaultConnection`
+key. `appsettings.json` holds the template and `appsettings.Development.json` overrides it;
+`Program.cs` resolves it with `GetConnectionString("DefaultConnection")` and expands `${NAME}`
+placeholders from the four variables above.
+
+`TrustServerCertificate` is part of that connection string, not hardcoded. It is `False` in
+`appsettings.json` and `True` only in `appsettings.Development.json`, because the local
+SQL Server uses a self-signed certificate. **Production does not trust server certificates
+unless you explicitly override `ConnectionStrings__DefaultConnection`.**
+
+If the connection string is missing — or, outside Development, still contains unresolved
+`${...}` placeholders — the app throws at startup and names the offending variables rather
+than failing later on the first query.
+
+---
+
+## Running in Docker
+
+`compose.yaml` builds the API image and starts both services:
+
+```bash
+cp .env.example .env    # then set a strong DB_PASSWORD
+docker compose up -d
+```
+
+- The API is published on **http://localhost:8080**.
+- The `api` service waits on `condition: service_healthy`, so Compose blocks until SQL Server
+  actually accepts logins (a `sqlcmd` healthcheck) rather than merely starting. If the
+  database never becomes healthy, `docker compose up` appears to hang — that is the gate
+  working, and it usually means `DB_PASSWORD` failed the container's password policy.
+- The container applies any pending EF migrations before starting the API, retrying for about
+  a minute while SQL Server finishes booting, and exits non-zero if they fail. It does not
+  start the app in a broken state.
+- The `api` service is started with `ASPNETCORE_ENVIRONMENT=Development` so it can reach the
+  self-signed local SQL Server certificate, and so Swagger is served in the container.
+
+`DB_PASSWORD` must satisfy the SQL Server image's password policy: **at least 8 characters
+and at least three of** uppercase, lowercase, digits, and symbols. The `xxxxxxx` placeholder
+in `.env.example` is deliberately invalid and will crash-loop the database container.
+
+---
+
+## Known Issues
+
+- **`dotnet ef database update` currently fails.** EF Core 9 raises
+  `PendingModelChangesWarning` as an error, and the transactional-outbox commit added the
+  `OutboxMessages` DbSet and index **without a migration**. The model is therefore ahead of the
+  last snapshot and no migration can be applied until a migration is added for `OutboxMessage`.
+  Until then the API cannot create its own schema. The unit tests do not catch this because
+  they run on the EF InMemory provider, which builds its schema from the model instead.
+- **The database is never created for you.** `compose.yaml` provisions the SQL Server
+  *instance* but no `PolicyManager` database. `dotnet ef database update` and the container
+  entrypoint both connect with `Database=PolicyManager`, so that database must exist first.
 
 ---
 
@@ -92,8 +146,19 @@ dotnet test
 
 The suite is xUnit, with Moq for mocking the service interfaces and the EF Core InMemory
 provider for `AppDbContext`, so it needs no SQL Server instance. Coverage is collected via
-coverlet. CI runs `dotnet test` on every push to `main` and on every pull request targeting
-`main`, excluding `Migrations/**` from coverage, and uploads the report to Codecov.
+coverlet.
+
+Shared test infrastructure lives in `PolicyManager.Tests/Infrastructure/`:
+`InMemoryApiFactory` swaps the SQL Server `AppDbContext` for the InMemory provider,
+`ApiIntegrationTestBase` provides the client, lifecycle and holder/policy/claim seeding
+helpers, and `ServiceTestBase` provides a per-test `DbContext` and `Dispose` for the service
+tests. Add new tests by deriving from those rather than repeating the setup.
+
+CI runs `dotnet test` on every push to `main` and on every pull request targeting `main`,
+excluding `Migrations/**` from coverage, and uploads the report to Codecov. A second,
+independent job builds the Docker image without running it, so a Dockerfile regression fails
+CI without needing a database. Note that CI only runs for pull requests whose **base** is
+`main`; a pull request based on another branch does not trigger it.
 
 ---
 
@@ -148,7 +213,8 @@ PolicyManager/
 │   └── Program.cs
 ├── PolicyManager.Tests/
 │   ├── Controllers/
-│   └── Services/
+│   ├── Services/
+│   └── Infrastructure/
 ├── scripts/
 │   ├── addPolicyHolders.ts
 │   ├── addPolicy.ts
@@ -167,3 +233,19 @@ not exercised by CI. Each one fires thousands of `POST` requests with randomly g
 bodies (`7,417` in `addPolicyHolders.ts`, `10,000` in `addPolicy.ts` and `addClaim.ts`) at
 a hard-coded Azure host, using `fetch` and top-level `await`. There is no `package.json`
 or `tsconfig.json` in `scripts/`, so they need a runtime that supports both.
+
+---
+
+## Caching
+
+Policyholder reads are served from an in-process `IMemoryCache`. Keys are centralised in
+`PolicyManager/Models/CacheKeys.cs` rather than being built as string literals at each call
+site. The cache is registered with a 10 MiB `SizeLimit`, and **every** entry declares an
+explicit `Size` — once a `SizeLimit` is configured, `MemoryCache` throws if any entry omits
+it. Priorities are set so the large "all policyholders" collection is evicted before hot
+single-holder entries, and `Create` invalidates both keys explicitly.
+
+Be aware that the collection entry is a cache-invalidation seam: writes made **outside** the
+service (direct `AppDbContext` use, a future bulk import) do not invalidate it and will be
+masked until the entry expires.
+
