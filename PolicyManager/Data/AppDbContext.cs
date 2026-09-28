@@ -68,15 +68,23 @@ public class AppDbContext(DbContextOptions<AppDbContext> options) : DbContext(op
             .HasFilter("[ProcessedAt] IS NULL AND [DeadLetteredAt] IS NULL")
             .HasDatabaseName("IX_OutboxMessages_Pending");
 
-        modelBuilder.Entity<Policy>()
+        // Claims are the record of money that has been claimed and paid out, and they carry the
+// adjudication trail: who decided, when, and why. Cascading a delete from a policyholder through
+// their policies into their claims destroyed that history as a side effect of removing a contact
+// record, with no prompt and no trace of what was lost - and there is no API that reads a claim
+// back once its policy is gone, so nothing downstream would even notice. Both relationships
+// restrict instead: the database refuses the delete while dependents exist, and the caller is told
+// why. Retirement of a holder or a policy is a status change (a policy is cancelled, not deleted);
+// this only removes the silent destruction of financial records.
+modelBuilder.Entity<Policy>()
             .HasOne(p => p.PolicyHolder)
             .WithMany(ph => ph.Policies)
             .HasForeignKey(p => p.PolicyHolderId)
-            .OnDelete(DeleteBehavior.Cascade);
+            .OnDelete(DeleteBehavior.Restrict);
 
         modelBuilder.Entity<Claim>()
             .HasOne(c => c.Policy)
             .WithMany(p => p.Claims).HasForeignKey(c => c.PolicyId)
-            .OnDelete(DeleteBehavior.Cascade);
+            .OnDelete(DeleteBehavior.Restrict);
     }
 }
