@@ -20,8 +20,8 @@ public class ReportsServiceTests : ServiceTestBase
     public ReportsServiceTests()
     {
         _reportsService = new ReportsService(Context);
-        _policiesService = new PoliciesService(Context);
-        _claimsService = new ClaimsService(Context);
+        _policiesService = new PoliciesService(Context, Numbers);
+        _claimsService = new ClaimsService(Context, Numbers);
     }
 
     /// <summary>
