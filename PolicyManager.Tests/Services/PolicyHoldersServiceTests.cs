@@ -338,6 +338,7 @@ public class PolicyHoldersServiceTests : ServiceTestBase
 
         await _policyHoldersService.Restore(id);
 
+        Assert.NotNull(await _policyHoldersService.GetById(id));
         var holder = await _policyHoldersService.GetById(id);
         Assert.Equal("John", holder!.FirstName);
         Assert.Equal("js@test.com", holder.Email);

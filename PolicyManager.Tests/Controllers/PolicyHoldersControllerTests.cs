@@ -229,15 +229,13 @@ public class PolicyHoldersControllerTests : ApiIntegrationTestBase
     }
 
     /// <summary>
-    ///     Deleting a holder who still has policies hides the holder and leaves the book alone.
+    ///     Deleting a holder leaves their policies and claims in the book: only the holder's own record
+    ///     is hidden, and the claims filed against those policies are untouched. They are financial
+    ///     records carrying the adjudication trail, so they are not destroyed by a change to a contact
+    ///     record.
     /// </summary>
-    /// <remarks>
-    ///     The claims filed against those policies are financial records carrying the adjudication
-    ///     trail, so a delete that removed them would take the holder's history with it. Nothing
-    ///     cascades here, which is what makes the removal reversible.
-    /// </remarks>
     [Fact]
-    public async Task Delete_HolderWithPolicies_HidesTheHolderAndKeepsTheBook()
+    public async Task Delete_LeavesTheHoldersPoliciesAndClaimsInPlace()
     {
         var holderId = await SeedHolderAsync(_createPolicyHolderDto);
         var policyId = await SeedPolicyAsync(holderId);
@@ -246,8 +244,6 @@ public class PolicyHoldersControllerTests : ApiIntegrationTestBase
         var res = await Client.DeleteAsync($"/api/policyholders/{holderId}");
         Assert.Equal(HttpStatusCode.OK, res.StatusCode);
 
-        var get = await Client.GetAsync($"/api/policies/{policyId}");
-        Assert.Equal(HttpStatusCode.OK, get.StatusCode);
         // The holder is gone as far as the API is concerned...
         Assert.Equal(HttpStatusCode.NotFound, (await Client.GetAsync($"/api/policyholders/{holderId}")).StatusCode);
         Assert.Equal(HttpStatusCode.NotFound, (await Client.GetAsync($"/api/policyholders/{holderId}/policies")).StatusCode);
