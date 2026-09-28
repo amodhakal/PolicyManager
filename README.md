@@ -11,7 +11,9 @@ REST API for managing insurance policies, policyholders, and claims.
 
 PolicyManager is an ASP.NET Core Web API that models core insurance operations: creating and managing policyholders, issuing and updating policies, filing claims, and adjudicating those claims (approve/deny)
 
-All data is persisted to SQL Server via Entity Framework Core with migration-based schema management. Includes caching for performance.
+All data is persisted to SQL Server via Entity Framework Core with migration-based schema management.
+
+Every endpoint is authenticated and role-authorized, personal data is encrypted at rest and access-audited, writes carry optimistic concurrency tokens, and a transactional outbox publishes domain events to a message broker. Those are load-bearing, not decoration — each one is explained where it is implemented, including what it costs.
 
 ---
 
@@ -62,6 +64,26 @@ dotnet ef migrations add <MigrationName> --project PolicyManager/PolicyManager.c
 Swagger UI is available at `https://localhost:7100/swagger` (the `https` profile in
 `PolicyManager/Properties/launchSettings.json`). The app calls `UseHttpsRedirection()`,
 so plain HTTP requests are redirected to HTTPS.
+
+### The app will not start without three secrets
+
+Authentication and PII protection both fail fast rather than falling back to a default, so a
+first run needs all three of these supplied:
+
+```bash
+# 32 bytes base64 for AES-256:  openssl rand -base64 32
+Pii__EncryptionKey=
+# at least 32 bytes:             openssl rand -base64 48
+Pii__BlindIndexKey=
+# at least 32 bytes for HMAC-SHA256
+Jwt__SigningKey=
+```
+
+Each is explained where it is used: [Encryption at rest](#encryption-at-rest) and
+[Configuration](#configuration) respectively. A missing one is named in the startup error.
+This is the first thing that will stop you, and it is deliberate — an instance that comes up
+healthy while accepting unsigned tokens or storing addresses in the clear is worse than one
+that is plainly down.
 
 ---
 
@@ -149,6 +171,33 @@ in `.env.example` is deliberately invalid and will crash-loop the database conta
   *instance* but no `PolicyManager` database. `dotnet ef database update` and the container
   entrypoint both connect with `Database=PolicyManager`, so that database must exist first.
 
+- **`scripts/*.ts` are broken against the current API.** They were written before
+  authentication, rate limiting and request size limits existed, and all three get in their
+  way: every request now needs a bearer token, thousands of `POST`s in parallel will be
+  rate-limited, and the scripts hard-code an Azure host rather than taking a base URL. They
+  also still ignore every error — a bare `Promise.all` over fire-and-forget fetches, so a
+  run that fails entirely looks like a success. Treat them as a sketch of the intended
+  load profile, not as working tooling. Tracked in issues #18, #67.
+
+- **There is no frontend.** Every endpoint needs a token, and there is nothing in this
+  repository that mints one or exercises the API by hand. Driving the API means writing a
+  token first. Tracked in issue #89.
+
+- **Encrypted email columns only support equality.** The `Email` column is ciphertext, so the
+  only comparison available against it is the `EmailHash` blind index — an exact match. A
+  "starts with" or range query on a policyholder address is not expressible. Nothing needs
+  one today, and reaching for it later means decrypting in the application, not adding a
+  database index.
+
+- **`ResilientHttpMessageHandler` protects nothing yet.** The `outbound` named `HttpClient` is
+  registered with the pipeline and nothing issues calls through it, so the HTTP resilience
+  section is currently configuration without a dependency to apply it to.
+
+- **Controller-level tests do not exercise the SQL Server provider.** Only the
+  `SqlServer`-category tests do. A service can satisfy every controller test and still be
+  wrong against the real database; that gap is why `PolicyManager.Tests/Integration/` exists,
+  but it is not a substitute for a full-stack suite.
+
 ---
 
 ## Tests
@@ -160,8 +209,13 @@ dotnet test
 ```
 
 The suite is xUnit, with Moq for mocking the service interfaces and the EF Core InMemory
-provider for `AppDbContext`, so the default run needs no SQL Server instance. Coverage is
-collected via coverlet.
+provider for `AppDbContext`, so the default run needs no SQL Server instance and no broker.
+Coverage is collected via coverlet.
+
+Both of the opt-in features are off by default in the test host, so `dotnet test` needs
+neither RabbitMQ nor a collector. Tests that need a token call `TestTokens`, which mints
+**real** signed tokens the production validation pipeline evaluates — see
+[Tests](#tests) under Authentication.
 
 ### SQL Server tests
 
@@ -192,12 +246,13 @@ suites — the InMemory provider builds from the model, and the SQL Server tests
 missing table rather than on the drift.
 
 Shared test infrastructure lives in `PolicyManager.Tests/Infrastructure/`:
-`InMemoryApiFactory` swaps the SQL Server `AppDbContext` for the InMemory provider,
-`SqlServerApiFactory` repoints the application at the container and stops the outbox poller so it
-cannot drain rows a test is asserting on, `ApiIntegrationTestBase` provides the client, lifecycle
-and holder/policy/claim seeding helpers, `ServiceTestBase` provides a per-test `DbContext` and
-`Dispose` for the service tests, and `SqlServerFixture`/`SqlServerTestBase` own the container.
-Add new tests by deriving from those rather than repeating the setup.
+`InMemoryApiFactory` swaps the SQL Server `AppDbContext` for the InMemory provider and supplies
+the JWT and PII configuration the host now requires, `SqlServerApiFactory` repoints the application
+at the container and stops the outbox poller so it cannot drain rows a test is asserting on,
+`ApiIntegrationTestBase` provides the authenticated client, the lifecycle and the holder/policy/claim
+seeding helpers, `TestTokens` mints signed tokens with real role claims, `ServiceTestBase` provides a
+per-test `DbContext` and `Dispose` for the service tests, and `SqlServerFixture`/`SqlServerTestBase`
+own the container. Add new tests by deriving from those rather than repeating the setup.
 
 CI runs `dotnet test` on every push to `main` and on every pull request targeting `main`,
 excluding `Migrations/**` from coverage, and uploads the report to Codecov. A second,
@@ -234,17 +289,38 @@ CI without needing a database. Note that CI only runs for pull requests whose **
 | `POST` | `/api/claims` | File a claim against a policy |
 | `GET` | `/api/claims/{id}` | Get claim details |
 | `PATCH` | `/api/claims/{id}/status` | Adjudicate, approve or deny the claim |
+| `DELETE` | `/api/claims/{id}` | Delete a claim that has not been adjudicated; an approved or denied claim is a 409 |
 
 ### Health
 | Method | Route | Description |
 |---|---|---|
 | `GET` | `/health` | Liveness. Runs every registered check |
-| `GET` | `/health/ready` | Readiness. Runs only the checks tagged `ready` (currently `sql-server`) |
+| `GET` | `/health/ready` | Readiness. Runs only the checks tagged `ready` — `sql-server`, and `message-broker` when the broker is enabled |
 
 Route casing follows ASP.NET Core's default: `[Route("api/[controller]")]` resolves
 `PolicyHolders` to `/api/policyholders`, `Policies` to `/api/policies`, and `Claims` to
 `/api/claims`. All `{id}` segments are constrained to integers in code
 (`[HttpGet("{id:int}")]`).
+
+Every endpoint requires a bearer token — see
+[Authentication and Authorization](#authentication-and-authorization). The two health
+endpoints are the exception: they are unauthenticated, because an orchestrator probing
+liveness has no credential to present and a probe that needs one cannot report an
+outage. That is why their failure descriptions are deliberately vague.
+
+### Who may call what
+
+Roles are described in full under
+[Roles](#roles); the per-endpoint requirement is:
+
+| Operation | Requirement |
+|---|---|
+| Read any resource | `Agent`, `Adjuster` or `Admin` |
+| Create a policyholder, create or update a policy, file or adjudicate a claim | `Admin` or `Adjuster` |
+| Delete a policy | `Admin` only |
+
+An **adjudicated claim cannot be deleted at all**, by any role. The record of who decided
+it is why it stays in the book.
 
 ---
 
@@ -350,13 +426,20 @@ restarting it will not fix the database; only a readiness failure should take th
 rotation. A single combined endpoint would force an orchestrator to choose between restarting a
 healthy-but-isolated pod and leaving a broken one in the load balancer.
 
-There is one check today, `sql-server` (`PolicyManager/Health/SqlServerHealthCheck.cs`), tagged
-`ready`. It opens a connection through the injected `AppDbContext` and runs `SELECT 1` — the same
-connection string, provider and credentials the application itself uses, so a check that passed
-cannot coexist with a failure on every real request. It probes with a query rather than
-`CanConnectAsync` alone, because a connection validated when the process started is routinely dead
-by the time a probe first asks. A five-second per-check timeout bounds how long a hung connection
-can hold a probe open.
+There are two checks, both tagged `ready`:
+
+- **`sql-server`** (`PolicyManager/Health/SqlServerHealthCheck.cs`) opens a connection through the
+  injected `AppDbContext` and runs `SELECT 1` — the same connection string, provider and credentials
+  the application itself uses, so a check that passed cannot coexist with a failure on every real
+  request. It probes with a query rather than `CanConnectAsync` alone, because a connection validated
+  when the process started is routinely dead by the time a probe first asks. A five-second per-check
+  timeout bounds how long a hung connection can hold a probe open. It is wrapped in the database
+  resilience pipeline, so a database that is genuinely down is rejected quickly instead of every
+  probe paying the full timeout.
+- **`message-broker`** is registered only when `Broker:Enabled` is true. It reports the bus, and counts
+  a `Degraded` bus as a failure so a broker that is still starting takes the instance out of rotation
+  rather than admitting requests that would only fail. With the broker disabled the check does not
+  exist, and readiness is the database alone.
 
 The body carries the overall status, the per-check status, the published description and the
 timings, and the status is `200` for `Healthy` and `Degraded` and `503` for `Unhealthy`.
@@ -372,8 +455,8 @@ timings, and the status is `200` for `Healthy` and `Degraded` and `503` for `Unh
 ```
 
 **The failure description is constant — "The database is not reachable." — for every cause.**
-That endpoint has no authentication, and a provider exception names the server, the database, the
-login and often the path to the credential. The exception is logged instead, so it is reachable
+Those two endpoints have no authentication, and a provider exception names the server, the database,
+the login and often the path to the credential. The exception is logged instead, so it is reachable
 through the `X-Correlation-ID` of the probe rather than to anyone who can reach the port.
 
 For the same reason the built-in `HealthCheckResponseWriter.WriteMinimalPlaintext` is deliberately
@@ -411,14 +494,17 @@ PolicyManager/
 │   ├── DTOs/
 │   ├── Models/
 │   │   └── Enums/
+│   ├── Domain/            # claim lifecycle and coverage rules, as pure functions
 │   ├── Services/
-│   ├── Data/
+│   ├── Data/              # DbContext, concurrency tokens, outbox transaction
 │   ├── Health/
-│   ├── Configuration/
+│   ├── Configuration/     # one options class per appsettings section
 │   ├── Messaging/
 │   ├── Resilience/
 │   ├── Telemetry/
 │   ├── Middleware/
+│   ├── Errors/            # global exception handler, SQL error translation
+│   ├── Exceptions/
 │   ├── Migrations/
 │   ├── Properties/
 │   ├── Dockerfile
@@ -427,9 +513,13 @@ PolicyManager/
 ├── PolicyManager.Tests/
 │   ├── Controllers/
 │   ├── Services/
+│   ├── Domain/
+│   ├── Errors/
+│   ├── Middleware/
 │   ├── Messaging/
 │   ├── Resilience/
 │   ├── Telemetry/
+│   ├── Data/
 │   ├── Integration/
 │   └── Infrastructure/
 ├── scripts/
@@ -450,6 +540,9 @@ not exercised by CI. Each one fires thousands of `POST` requests with randomly g
 bodies (`7,417` in `addPolicyHolders.ts`, `10,000` in `addPolicy.ts` and `addClaim.ts`) at
 a hard-coded Azure host, using `fetch` and top-level `await`. There is no `package.json`
 or `tsconfig.json` in `scripts/`, so they need a runtime that supports both.
+
+**They will not work against the API as it now stands.** Two changes made them obsolete, and
+neither has been addressed — see [Known Issues](#known-issues).
 
 ---
 
@@ -1033,9 +1126,16 @@ A request aborted by the client is logged and dropped without writing a response
 left to read it, and writing to an aborted response body throws.
 
 The three domain exception types (`NotFoundException`, `ConflictException`, `BusinessRuleException`)
-are the vocabulary for these failures and are mapped above, but **the services do not throw them
-yet** — they return null or complete silently and the controllers choose the status. A duplicate
-email already returns 409 today, via the unique-index mapping rather than an explicit check.
+are the vocabulary for these failures, and **the services do throw them.** A write against an entity
+that does not exist raises `NotFoundException` rather than returning `false` for the controller to
+translate, so every write reports a missing entity the same way instead of each controller deciding
+separately. Previously the services returned `null` or completed silently, and `PUT`, `DELETE` and
+`PATCH` answered **200 for a resource that was never there** — contradicting their own documented 404
+and leaving a client unable to tell a successful update from a no-op.
+
+A duplicate email is a 409 both ways: the unique index and its error translation catch the race
+between the check and the insert, and `PolicyHoldersService` checks the blind index explicitly so the
+guarantee does not depend on a database error surfacing at all.
 
 ---
 
