@@ -4,6 +4,9 @@
     depends_on:
       db:
         condition: service_healthy
+      rabbitmq:
+        condition: service_healthy
+        required: false
     build:
       context: .
       dockerfile: PolicyManager/Dockerfile
@@ -13,8 +16,37 @@
       - DB_NAME=${DB_NAME:-PolicyManager}
       - DB_USER=${DB_USER:-SA}
       - DB_PASSWORD=${DB_PASSWORD}
+      # The outbox broker is opt-in. Set BROKER_ENABLED=true in .env to have the API publish
+      # outbox messages to RabbitMQ; left unset it keeps the in-process stand-in and never
+      # needs the broker to be up.
+      - Broker__Enabled=${BROKER_ENABLED:-false}
+      - Broker__Host=${BROKER_HOST:-rabbitmq}
+      - Broker__Port=${BROKER_PORT:-5672}
+      - Broker__Username=${BROKER_USERNAME:-guest}
+      - Broker__Password=${BROKER_PASSWORD:-guest}
+      - Broker__QueueName=${BROKER_QUEUE_NAME:-policy-manager.outbox}
     ports:
       - "8080:8080"
+    networks:
+      - mssql-net
+  rabbitmq:
+    image: rabbitmq:3.13-management-alpine
+    container_name: rabbitmq_container
+    restart: unless-stopped
+    hostname: rabbitmq
+    environment:
+      - RABBITMQ_DEFAULT_USER=${BROKER_USERNAME:-guest}
+      - RABBITMQ_DEFAULT_PASS=${BROKER_PASSWORD:-guest}
+      - RABBITMQ_DEFAULT_VHOST=${BROKER_VHOST:-/}
+    ports:
+      - "5672:5672"
+      - "15672:15672"
+    healthcheck:
+      test: ["CMD", "rabbitmq-diagnostics", "-q", "check_running"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 20s
     networks:
       - mssql-net
   db:

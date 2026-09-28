@@ -22,6 +22,9 @@ All data is persisted to SQL Server via Entity Framework Core with migration-bas
 | ASP.NET Core            | Web API framework |
 | Entity Framework Core   | ORM with code-first migrations |
 | SQL Server (Docker)     | Primary data store |
+| MassTransit / RabbitMQ  | Transactional-outbox transport (opt-in) |
+| OpenTelemetry           | Distributed tracing and metrics |
+| Polly                   | Retry, circuit breakers and timeouts for outbound calls |
 | OpenAPI / Swagger       | API documentation and contract |
 | GitHub Actions          | CI pipeline (build, test on every push to main) |
 | Docker / Docker Compose | Containerized local environment |
@@ -75,6 +78,24 @@ are then read from the process environment.
 | `DB_NAME` | `PolicyManager` | Yes | Database name for the connection string's `Database`. Must already exist for `dotnet ef database update` to target it. |
 | `DB_USER` | `SA` | Yes | SQL Server login for the connection string's `User Id`. Must match the account `DB_PASSWORD` belongs to (the Compose service creates `sa`). |
 
+### Broker variables
+
+Set `BROKER_ENABLED=true` in `.env` to have the API publish the transactional outbox to
+RabbitMQ instead of the in-process logging stand-in. Leave it `false` — the default — and no
+broker is needed for `dotnet test` or for local development. See
+[Publishing to a real broker](#publishing-to-a-real-broker) for the full set of `Broker__*`
+configuration keys and what each one is for.
+
+| Variable | Default (in `.env.example`) | Required | Purpose |
+|---|---|---|---|
+| `BROKER_ENABLED` | `false` | No | Publishes the outbox to the broker when `true`. Consumed by `compose.yaml` as `Broker__Enabled`. |
+| `BROKER_HOST` | `localhost` | No | Broker hostname. Use `rabbitmq` when the API runs inside the Compose network. |
+| `BROKER_PORT` | `5672` | No | AMQP port. |
+| `BROKER_USERNAME` | `guest` | No | Broker username. Also sets `RABBITMQ_DEFAULT_USER` on the Compose broker. |
+| `BROKER_PASSWORD` | `guest` | No | Broker password. Also sets `RABBITMQ_DEFAULT_PASS`. Change it for anything but a local container. |
+| `BROKER_VHOST` | `/` | No | Virtual host. Also sets `RABBITMQ_DEFAULT_VHOST`. |
+| `BROKER_QUEUE_NAME` | `policy-manager.outbox` | No | The durable queue outbox messages are published to. |
+
 The connection string lives in configuration under the standard `ConnectionStrings:DefaultConnection`
 key. `appsettings.json` holds the template and `appsettings.Development.json` overrides it;
 `Program.cs` resolves it with `GetConnectionString("DefaultConnection")` and expands `${NAME}`
@@ -110,6 +131,11 @@ docker compose up -d
   start the app in a broken state.
 - The `api` service is started with `ASPNETCORE_ENVIRONMENT=Development` so it can reach the
   self-signed local SQL Server certificate, and so Swagger is served in the container.
+
+`compose.yaml` also starts a `rabbitmq` service and wires the `Broker__*` variables into the
+`api` service, but the outbox transport is off unless `BROKER_ENABLED=true` is set in `.env` — the
+API does not wait on RabbitMQ and does not contact it. The management UI is at
+<http://localhost:15672> (`guest` / `guest` by default).
 
 `DB_PASSWORD` must satisfy the SQL Server image's password policy: **at least 8 characters
 and at least three of** uppercase, lowercase, digits, and symbols. The `xxxxxxx` placeholder
@@ -388,6 +414,11 @@ PolicyManager/
 │   ├── Services/
 │   ├── Data/
 │   ├── Health/
+│   ├── Configuration/
+│   ├── Messaging/
+│   ├── Resilience/
+│   ├── Telemetry/
+│   ├── Middleware/
 │   ├── Migrations/
 │   ├── Properties/
 │   ├── Dockerfile
@@ -396,6 +427,10 @@ PolicyManager/
 ├── PolicyManager.Tests/
 │   ├── Controllers/
 │   ├── Services/
+│   ├── Messaging/
+│   ├── Resilience/
+│   ├── Telemetry/
+│   ├── Integration/
 │   └── Infrastructure/
 ├── scripts/
 │   ├── addPolicyHolders.ts
@@ -1052,6 +1087,191 @@ Everything above is configured under the `Outbox` section of `appsettings.json`:
 `MaxRetryDelay`, `MaxAttempts`.
 
 `IOutboxPublisher` is the transport seam. The registered `LoggingOutboxPublisher` records each
-message and returns success — there is no broker on the other end yet, so **messages are drained
-and discarded**. Replacing it with a real transport means registering a different
-`IOutboxPublisher`; the claiming, retry and dead-lettering policy is unaffected.
+message and returns success — with no broker configured the outbox still drains correctly, but
+**the messages are discarded**. See [Publishing to a real broker](#publishing-to-a-real-broker)
+below for what replaces it.
+
+### Publishing to a real broker
+
+The transport is [MassTransit](https://masstransit.io) over AMQP, and it is **opt-in**. With
+`Broker:Enabled` false — the default — nothing in the composition root starts a bus, no broker is
+contacted, and the logging stand-in stays registered. That is a deliberate constraint, not a
+convenience: making the transport mandatory would mean `dotnet test` needed a running broker, and
+CI would grow a service dependency for a path none of the tests are about.
+
+The claiming, retry and dead-lettering policy in `OutboxDispatcher` is **unchanged**. The
+dispatcher only ever sees the `IOutboxPublisher` contract — publish, or throw — so swapping the
+implementation is the whole of the change. A transport failure still surfaces as an exception and
+the existing policy decides between a scheduled retry and a dead letter.
+
+Enabling it publishes an `OutboxEnvelope` — a wire contract carrying the outbox row's identifier,
+its `Type` discriminator, its JSON `Content` payload, when it was created and how many attempts had
+already failed. The row identifier is reused as the broker message identifier, so a redelivery is
+recognisable as the same message rather than a new one, and the discriminator travels as a header
+so a consumer can filter on it without deserialising the payload. The queue named by
+`Broker:QueueName` is declared and bound to the publish exchange at bus start, because nothing in
+this application consumes these messages and an unbound queue would mean they reached an exchange
+and were thrown away.
+
+| Key | Default | Purpose |
+|---|---|---|
+| `Broker:Enabled` | `false` | Registers the MassTransit publisher and starts a RabbitMQ bus. `false` keeps the logging stand-in. |
+| `Broker:Host` | `localhost` | Broker hostname. `rabbitmq` when the API runs inside the Compose network. |
+| `Broker:Port` | `5672` | AMQP port. `5671` for AMQP over TLS. |
+| `Broker:VirtualHost` | `/` | Virtual host the bus connects to. |
+| `Broker:Username` | `guest` | Broker username. |
+| `Broker:Password` | `guest` | Broker password. Supply this from a secret store or `Broker__Password` rather than committing it. |
+| `Broker:UseSsl` | `false` | Negotiate TLS with the broker. |
+| `Broker:QueueName` | `policy-manager.outbox` | The durable queue outbox messages are published to. |
+| `Broker:Durable` | `true` | Survive a broker restart. `false` would lose exactly the messages the outbox exists to guarantee. |
+| `Broker:RequestedHeartbeat` | `00:00:30` | AMQP heartbeat, so a silently dropped connection is detected rather than waited out. |
+| `Broker:RequestedConnectionTimeout` | `00:00:10` | How long to wait for the initial connection before giving up. Also bounds the broker health check. |
+| `Broker:PublishTimeout` | `00:00:30` | Deadline for a single publish, so it cannot outlive the outbox claim lease and be picked up by a second processor. |
+
+Override any of them with the `__` environment form, as `compose.yaml` does:
+
+```bash
+Broker__Enabled=true
+Broker__Host=localhost
+Broker__Port=5672
+Broker__Username=guest
+Broker__Password=guest
+Broker__QueueName=policy-manager.outbox
+```
+
+A broker that is enabled but not usable — no host, no queue, a port outside 1–65535, a zero publish
+timeout — **fails at startup** with a message naming the offending key, rather than coming up
+healthy and silently discarding events.
+
+With the broker enabled, a `message-broker` health check is registered and tagged `ready`, so
+`/health/ready` reports the broker's state while `/health` still reports only that the process is
+up. It counts a `Degraded` bus as a failure, so a broker that is still starting takes the instance
+out of rotation instead of admitting requests that would only fail.
+
+`compose.yaml` includes a `rabbitmq` service (`rabbitmq:3.13-management-alpine`, AMQP on `5672`
+and the management UI on <http://localhost:15672>). It is started by `docker compose up -d` but the
+API does not depend on it: the `Broker__*` variables default to `Broker__Enabled=false`, so the
+local path is unchanged. To publish from the containerised API, set `BROKER_ENABLED=true` in `.env`.
+
+`PolicyManager.Tests/Messaging/` covers the wiring without a broker: that the disabled default
+registers the stand-in and no bus, that enabling replaces it, that configuration binds either way,
+that an invalid configuration is rejected at registration, and — against MassTransit's in-memory
+harness — that the outbox row reaches the publish pipeline with its identifier and header intact
+and that a transport failure propagates rather than being swallowed.
+
+The publish itself runs inside a Polly pipeline, described under
+[Resilience](#resilience-circuit-breakers-and-retry).
+
+---
+
+## Observability
+
+### Telemetry
+
+The API is instrumented with [OpenTelemetry](https://opentelemetry.io): ASP.NET Core for incoming
+requests, Entity Framework Core for database commands, `HttpClient` for outbound calls, the runtime
+for process metrics, and MassTransit's activity source for broker publishes. Traces and metrics are
+collected and tagged with the correlation ID that `CorrelationIdMiddleware` already puts on the
+current activity, so a support conversation that starts with "here is my request ID" ends at a trace
+rather than at a log search.
+
+**Nothing is exported unless you configure a collector.** Collection is on by default; export is not.
+That separation is deliberate — it is what makes turning on OTLP a configuration change rather than a
+code change — and it is also why the default local-dev and CI paths ship no telemetry anywhere,
+without anyone having to remember to switch it off.
+
+| Key | Default | Purpose |
+|---|---|---|
+| `Telemetry:ServiceName` | `policy-manager-api` | The `service.name` resource attribute every span and metric is attributed to. |
+| `Telemetry:ServiceVersion` | `1.0.0` | The `service.version` resource attribute. |
+| `Telemetry:Environment` | host environment | `deployment.environment`. Falls back to `ASPNETCORE_ENVIRONMENT`. |
+| `Telemetry:EnableTracing` | `true` | Collect distributed traces. |
+| `Telemetry:EnableMetrics` | `true` | Collect metrics. |
+| `Telemetry:OtlpEndpoint` | *(unset)* | Collector endpoint, e.g. `http://localhost:4317`. **Unset means nothing is exported.** |
+| `Telemetry:OtlpProtocol` | `grpc` | `grpc` or `http/protobuf`. |
+| `Telemetry:TraceSampleRatio` | `1.0` | Head-sampling ratio. The decision is made at the root of a trace and carried on the trace, so a downstream service does not decide differently and produce a trace with a hole in the middle. |
+
+Override with the `__` environment form, as with every other section:
+
+```bash
+Telemetry__OtlpEndpoint=http://localhost:4317
+Telemetry__ServiceName=policy-manager-api-canary
+Telemetry__TraceSampleRatio=0.1
+```
+
+Pointing at a collector with [docker compose](https://github.com/open-telemetry/opentelemetry-collector) locally
+and then restarting is the whole of the setup. An unrecognised `OtlpProtocol`, a sample ratio outside
+0..1, or an empty `ServiceName` all fail at startup rather than being silently corrected — a sampler
+quietly clamped to a range would quietly change how much telemetry a deployment produces.
+
+EF Core **query parameters are not recorded**. A parameter can carry a policyholder's email, and a
+trace backend is a far wider audience than the database the row lives in. The statement text is
+recorded, which is enough to see which query is slow.
+
+### Resilience: circuit breakers and retry
+
+Every outbound dependency gets a [Polly](https://www.nuget.org/packages/Polly) pipeline built from
+the `Resilience` section: an **exponential-backoff retry**, a **circuit breaker**, and a **timeout**.
+Three dependencies, three independent budgets, because a database and a broker fail for different
+reasons on different timescales and treating them the same would be wrong in both directions.
+
+The strategies are nested breaker → retry → timeout, in that order. The breaker is outermost so a
+dependency that is down is rejected immediately rather than after the caller has sat through the
+backoff chain; the timeout is innermost so a single hung attempt is bounded and a timeout counts as
+a retryable failure rather than stalling the whole chain.
+
+`MaxRetryAttempts: 0` means the retry strategy is **omitted**, not configured with zero attempts —
+Polly treats a retry budget of zero as a misconfiguration, so a dependency that should fail fast has
+no retry in its pipeline at all. Cancellations are never retried: a cancelled token is the host
+shutting down or the caller giving up, and replaying it spends the budget and then throws anyway.
+
+| Key | Default | Purpose |
+|---|---|---|
+| `MaxRetryAttempts` | `2` (`Database`: 3) | Retries after the first attempt. `0` disables the retry strategy. |
+| `Delay` | `200ms` | First backoff. Each retry doubles it. |
+| `MaxDelay` | `2s` (database/broker: `5s`) | Ceiling for the doubling. |
+| `UseJitter` | `true` | Without it every caller that failed at the same instant retries at the same instant, which is how a recovering dependency gets knocked over again. |
+| `BreakDuration` | `10s` (database: `15s`, broker: `30s`) | How long the circuit stays open. |
+| `FailureRatio` | `0.5` | Share of failures over the sampling window at which the circuit opens. |
+| `MinimumThroughput` | `10` (database/broker: `5`) | Calls required in the window before the ratio counts at all. A floor of 1 would open the circuit on a single unlucky request. |
+| `Timeout` | `10s` (database: `5s`, broker: `30s`) | Deadline for a single attempt. |
+
+A budget that would silently disable the protection it describes — a zero timeout, a `MaxDelay` below
+its own `Delay`, a `MinimumThroughput` below 2, a `FailureRatio` outside 0..1 — is rejected at
+startup naming the offending key.
+
+#### Where the pipelines are applied
+
+- **Broker.** The outbox publish runs inside the broker pipeline. It absorbs a blip within one
+  attempt while the dispatcher's own policy handles the long game across passes, eventually
+  dead-lettering; an open circuit rejects immediately, so a broker that has been down for a while is
+  not asked again until it has had a chance to recover. The two compose rather than duplicate.
+- **Database.** The SQL Server readiness probe. It is the one database call made on a timer, and the
+  one most likely to be repeated while the database is down — an orchestrator polls readiness every
+  few seconds precisely when things are worst. Without a breaker, each poll pays the full timeout,
+  and with a retry budget underneath it pays that several times over, so the check meant to detect an
+  outage becomes a contributor to it.
+- **HTTP.** The `outbound` named client, via `ResilientHttpMessageHandler` in its handler stack. A
+  handler rather than a call at each site, so a new outbound call is protected the moment it is
+  written — a policy applied by hand is a policy the next contributor forgets.
+
+#### Why `EnableRetryOnFailure` is deliberately off
+
+EF Core's retrying execution strategy refuses user-initiated transactions, and the outbox write path
+in `Data/OutboxTransaction.cs` opens one. Turning it on would turn every create and update into
+`The configured execution strategy does not support user-initiated transactions`. Making it work
+would mean re-entrancy work in `OutboxTransaction` — a replayed `SaveChangesAsync` on a
+change tracker that has already marked the entity `Unchanged` would insert nothing and write an
+outbox message with `Id = 0` — which is a change to the outbox's correctness story, not a resilience
+setting. Database retry therefore stays where it can be applied safely. Do not add
+`EnableRetryOnFailure` without that work.
+
+`PolicyManager.Tests/Resilience/` and `PolicyManager.Tests/Telemetry/` cover the behaviour from the
+outside: that a transient failure is retried and eventually succeeds, that the retry budget is
+exponential, capped and jittered, that retries actually wait, that a cancellation is not replayed,
+that the circuit opens and stops calling through, that a single failure does not open it, that the
+readiness probe is short-circuited by it, and that nothing is exported without a collector endpoint.
+
+The retry and breaker *shapes* are asserted against `ResilienceRegistration.BuildRetry` and
+`BuildCircuitBreaker` rather than inferred from elapsed time. A "the second wait was longer than the
+first" assertion measures the machine as much as the policy, and fails on a busy one.
