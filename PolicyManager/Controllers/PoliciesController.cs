@@ -12,7 +12,8 @@ namespace PolicyManager.Controllers;
 ///     Controller for managing insurance policies.
 /// </summary>
 /// <remarks>
-///     Provides endpoints for retrieving, creating, updating, and canceling policies.
+///     Provides endpoints for retrieving, creating, updating, and canceling policies, and for reading
+///     the claims filed against one.
 ///     Each policy is associated with a specific policyholder.
 /// </remarks>
 [ApiController]
@@ -23,7 +24,7 @@ namespace PolicyManager.Controllers;
 [Route("api/v{version:apiVersion}/[controller]")]
 [ApiVersion(ApiVersions.V1)]
 [Authorize(Policy = AuthorizationPolicies.AnyRole)]
-public class PoliciesController(IPoliciesService policiesService) : ControllerBase
+public class PoliciesController(IPoliciesService policiesService, IClaimsService claimsService) : ControllerBase
 {
     /// <summary>
     ///     Retrieves a page of policies, optionally filtered by status.
@@ -65,6 +66,32 @@ public class PoliciesController(IPoliciesService policiesService) : ControllerBa
     {
         var policy = await policiesService.GetById(id, cancellationToken);
         return policy == null ? NotFound() : Ok(policy);
+    }
+
+    /// <summary>
+    ///     Retrieves a page of the claims filed against one policy.
+    /// </summary>
+    /// <remarks>
+    ///     Supports <c>?page=</c>, <c>?pageSize=</c>, <c>?sortBy=</c>, <c>?descending=</c> and
+    ///     <c>?status=</c>, exactly as the unfiltered claims list does. A policy nobody has claimed
+    ///     against returns an empty page; a policy that does not exist is a 404.
+    /// </remarks>
+    /// <param name="id">The policy identifier.</param>
+    /// <param name="pagination">The requested page, page size and sort.</param>
+    /// <param name="status">Optional status filter for claims.</param>
+    /// <param name="cancellationToken">Token used to cancel the operation.</param>
+    /// <returns>A page of the policy's claims.</returns>
+    /// <response code="200">Returns the requested page of claims and the total matching count.</response>
+    /// <response code="404">Policy not found.</response>
+    [HttpGet("{id:int}/claims")]
+    public async Task<ActionResult<PagedResult<ClaimDto>>> GetClaims(
+        int id,
+        [FromQuery] PaginationQuery pagination,
+        [FromQuery] ClaimStatus? status,
+        CancellationToken cancellationToken)
+    {
+        var claims = await claimsService.GetByPolicy(id, pagination, status, cancellationToken);
+        return Ok(claims);
     }
 
     /// <summary>

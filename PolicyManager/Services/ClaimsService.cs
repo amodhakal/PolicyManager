@@ -23,13 +23,64 @@ public class ClaimsService(AppDbContext context, IBusinessNumberGenerator number
     public async Task<PagedResult<ClaimDto>> GetAll(
         PaginationQuery pagination, CancellationToken cancellationToken = default)
     {
+        return await PageAsync(context.Claims.AsQueryable(), pagination, null, cancellationToken);
+    }
+
+    /// <summary>
+    ///     Retrieves one page of the claims filed against a single policy, optionally filtered by
+    ///     status, ordered, with the total count of that policy's whole filtered result set.
+    /// </summary>
+    /// <param name="policyId">The policy identifier.</param>
+    /// <param name="pagination">The requested page, page size and sort. Normalized before use.</param>
+    /// <param name="status">Optional status filter.</param>
+    /// <param name="cancellationToken">Token used to cancel the operation.</param>
+    /// <returns>A page of the policy's claims. Empty when none match the filter.</returns>
+    /// <exception cref="NotFoundException">No policy has that identifier.</exception>
+    public async Task<PagedResult<ClaimDto>> GetByPolicy(
+        int policyId,
+        PaginationQuery pagination,
+        ClaimStatus? status = null,
+        CancellationToken cancellationToken = default)
+    {
+        // Distinguished from an empty page on purpose. A policy nobody has claimed against and a
+        // policy that does not exist are different answers, and reporting them alike would tell a
+        // caller their claim history is empty when in fact they asked about the wrong policy.
+        if (!await context.Policies.AnyAsync(p => p.Id == policyId, cancellationToken))
+            throw new NotFoundException("Policy", policyId);
+
+        var query = context.Claims.Where(c => c.PolicyId == policyId);
+
+        return await PageAsync(query, pagination, status, cancellationToken);
+    }
+
+    /// <summary>
+    ///     Applies the count, the ordering, the page slice and the projection to a claim query.
+    /// </summary>
+    /// <remarks>
+    ///     Shared by the unfiltered and the per-policy reads so both compose the paging the same way:
+    ///     counted after the filter and before the ordering, so <c>TotalCount</c> describes the
+    ///     filtered set and the database is not asked to sort rows the page will discard.
+    /// </remarks>
+    /// <param name="query">The filtered claims to page over.</param>
+    /// <param name="pagination">The requested page, page size and sort. Normalized before use.</param>
+    /// <param name="status">Optional status filter, or null for every status.</param>
+    /// <param name="cancellationToken">Token used to cancel the operation.</param>
+    /// <returns>The requested page of the query.</returns>
+    private async Task<PagedResult<ClaimDto>> PageAsync(
+        IQueryable<Claim> query,
+        PaginationQuery pagination,
+        ClaimStatus? status,
+        CancellationToken cancellationToken)
+    {
         pagination.Normalize();
 
-        var totalCount = await context.Claims.CountAsync(cancellationToken);
+        if (status != null) query = query.Where(c => c.Status == status);
+
+        var totalCount = await query.CountAsync(cancellationToken);
 
         // The sort and the offset are applied to the entity query and the projection follows them, so
         // the database does the paging and only the requested rows come back.
-        var items = await ApplySorting(context.Claims, pagination.SortBy, pagination.Descending)
+        var items = await ApplySorting(query, pagination.SortBy, pagination.Descending)
             .Skip((pagination.Page - 1) * pagination.PageSize)
             .Take(pagination.PageSize)
             .Select(c => new ClaimDto

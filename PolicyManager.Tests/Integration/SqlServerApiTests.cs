@@ -193,6 +193,72 @@ public class SqlServerApiTests : SqlServerTestBase, IAsyncLifetime
         Assert.Equal(HttpStatusCode.OK, (await Client.GetAsync($"/api/claims/{claim!.Id}")).StatusCode);
     }
 
+    /// <summary>
+    ///     The report endpoints answer from the real provider, which is the only way to know the
+    ///     grouped aggregates behind them translate to SQL rather than being quietly evaluated in
+    ///     memory.
+    /// </summary>
+    /// <remarks>
+    ///     The in-memory provider has no SQL to translate, so a query the SQL Server provider rejects
+    ///     passes there every time.
+    /// </remarks>
+    [Fact]
+    public async Task Report_endpoints_group_in_sql_server()
+    {
+        var holderId = await CreateHolderAsync("Margaret", "Hamilton", "margaret@example.com");
+
+        var auto = await Client.PostAsJsonAsync("/api/policies", new CreatePolicyDto
+        {
+            PolicyHolderId = holderId, Premium = 1000m, Type = Models.Enums.PolicyType.Auto,
+            StartDate = new DateTime(2026, 3, 1), EndDate = new DateTime(2027, 3, 1)
+        });
+        var home = await Client.PostAsJsonAsync("/api/policies", new CreatePolicyDto
+        {
+            PolicyHolderId = holderId, Premium = 250m, Type = Models.Enums.PolicyType.Home,
+            StartDate = new DateTime(2026, 3, 1), EndDate = new DateTime(2027, 3, 1)
+        });
+
+        var claim = await Client.PostAsJsonAsync("/api/claims", new CreateClaimDto
+        {
+            PolicyId = (await auto.Content.ReadFromJsonAsync<PolicyDto>())!.Id,
+            Amount = 500m,
+            Description = "Collision"
+        });
+
+        await Client.PatchAsJsonAsync(
+            $"/api/claims/{(await claim.Content.ReadFromJsonAsync<ClaimDto>())!.Id}/status",
+            new UpdateClaimStatusDto { Status = Models.Enums.ClaimStatus.Approved });
+
+        var premium = await (await Client.GetAsync("/api/reports/premium-by-type"))
+            .Content.ReadFromJsonAsync<PremiumByTypeReportDto>();
+
+        Assert.Equal(2, premium!.TotalPolicies);
+        Assert.Equal(1250m, premium.TotalPremium);
+        Assert.Equal(1000m, premium.Types.Single(t => t.Type == Models.Enums.PolicyType.Auto).TotalPremium);
+        Assert.Equal(250m, premium.Types.Single(t => t.Type == Models.Enums.PolicyType.Home).TotalPremium);
+
+        var open = await (await Client.GetAsync("/api/reports/open-claims-by-status"))
+            .Content.ReadFromJsonAsync<OpenClaimsByStatusReportDto>();
+
+        Assert.Equal(1, open!.TotalOpenClaims);
+        Assert.Equal(500m, open.TotalOpenAmount);
+        Assert.Equal(
+            1, open.Statuses.Single(s => s.Status == Models.Enums.ClaimStatus.Approved).ClaimCount);
+        Assert.Equal(0, open.Statuses.Single(s => s.Status == Models.Enums.ClaimStatus.Pending).ClaimCount);
+
+        var ratio = await (await Client.GetAsync("/api/reports/claims-ratio-per-holder"))
+            .Content.ReadFromJsonAsync<PagedResult<HolderClaimsRatioDto>>();
+
+        var row = Assert.Single(ratio!.Items);
+        Assert.Equal(holderId, row.PolicyHolderId);
+        Assert.Equal(2, row.PolicyCount);
+        Assert.Equal(1250m, row.TotalPremium);
+        Assert.Equal(500m, row.TotalOpenClaimAmount);
+        Assert.Equal(0.4m, row.ClaimsRatio);
+        Assert.Equal("Margaret Hamilton", row.PolicyholderName);
+        Assert.NotNull(home);
+    }
+
     private async Task<int> CreateHolderAsync(string first, string last, string email)
     {
         var response = await Client.PostAsJsonAsync("/api/policyholders",

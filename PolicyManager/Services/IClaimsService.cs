@@ -1,4 +1,5 @@
 using PolicyManager.DTOs;
+using PolicyManager.Models.Enums;
 
 namespace PolicyManager.Services;
 
@@ -17,6 +18,27 @@ public interface IClaimsService
     /// <returns>A page of claims as ClaimDto objects.</returns>
     public Task<PagedResult<ClaimDto>> GetAll(
         PaginationQuery pagination, CancellationToken cancellationToken = default);
+
+    /// <summary>
+    ///     Retrieves one page of the claims filed against a single policy, optionally filtered by
+    ///     status. Sorts by <c>id</c>, <c>claimNumber</c>, <c>amount</c>, <c>status</c>, <c>filedAt</c>
+    ///     or <c>policyId</c>, defaulting to <c>id</c>.
+    /// </summary>
+    /// <remarks>
+    ///     A policy nobody has claimed against gets an empty page; a policy that does not exist raises
+    ///     <c>NotFoundException</c>, so the two are never confused.
+    /// </remarks>
+    /// <param name="policyId">The policy identifier.</param>
+    /// <param name="pagination">The requested page, page size and sort. Normalized by the service.</param>
+    /// <param name="status">Optional status filter.</param>
+    /// <param name="cancellationToken">Token used to cancel the operation.</param>
+    /// <returns>A page of the policy's claims.</returns>
+    /// <exception cref="Exceptions.NotFoundException">No policy has that identifier.</exception>
+    public Task<PagedResult<ClaimDto>> GetByPolicy(
+        int policyId,
+        PaginationQuery pagination,
+        ClaimStatus? status = null,
+        CancellationToken cancellationToken = default);
 
     /// <summary>
     ///     Retrieves a claim by its unique identifier.

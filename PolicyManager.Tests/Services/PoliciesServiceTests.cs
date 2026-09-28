@@ -23,11 +23,13 @@ public class PoliciesServiceTests : ServiceTestBase
     ///     Seeds a test policy into the database.
     /// </summary>
     /// <param name="holderId">The policyholder ID.</param>
+    /// <param name="premium">The policy premium.</param>
     /// <param name="status">The initial policy status.</param>
     /// <returns>The ID of the created policy.</returns>
-    private async Task<int> SeedPolicy(int holderId, PolicyStatus status = PolicyStatus.Active)
+    private async Task<int> SeedPolicy(
+        int holderId, decimal premium = 500m, PolicyStatus status = PolicyStatus.Active)
     {
-        return await _policiesService.Create(new CreatePolicyDto { Type = Models.Enums.PolicyType.Auto, PolicyHolderId = holderId, Premium = 500m, StartDate = new DateTime(2026, 1, 1), EndDate = new DateTime(2027, 1, 1) });
+        return await _policiesService.Create(new CreatePolicyDto { Type = Models.Enums.PolicyType.Auto, PolicyHolderId = holderId, Premium = premium, StartDate = new DateTime(2026, 1, 1), EndDate = new DateTime(2027, 1, 1) });
     }
 
     /// <summary>
@@ -189,5 +191,102 @@ public class PoliciesServiceTests : ServiceTestBase
         Assert.NotNull(outboxMessage);
         Assert.Null(outboxMessage.ProcessedAt);
         Assert.Contains("1000", outboxMessage.Content);
+    }
+
+    /// <summary>
+    ///     A holder's policy search returns only that holder's policies, never anyone else's.
+    /// </summary>
+    [Fact]
+    public async Task GetByPolicyHolder_ReturnsOnlyThatHoldersPolicies()
+    {
+        var jane = await SeedHolderEntityAsync("Jane", "Doe", "jane@example.com");
+        var john = await SeedHolderEntityAsync("John", "Smith", "john@example.com");
+
+        await SeedPolicy(jane.Id);
+        await SeedPolicy(jane.Id);
+        await SeedPolicy(john.Id);
+
+        var result = await _policiesService.GetByPolicyHolder(jane.Id, new PaginationQuery());
+
+        Assert.Equal(2, result.Items.Count);
+        Assert.Equal(2, result.TotalCount);
+        Assert.All(result.Items, p => Assert.Equal(jane.Id, p.PolicyHolderId));
+    }
+
+    /// <summary>
+    ///     A holder with no policies gets an empty page, which is not the same answer as a holder who
+    ///     does not exist.
+    /// </summary>
+    [Fact]
+    public async Task GetByPolicyHolder_NoPolicies_ReturnsAnEmptyPage()
+    {
+        var jane = await SeedHolderEntityAsync("Jane", "Doe", "jane@example.com");
+
+        var result = await _policiesService.GetByPolicyHolder(jane.Id, new PaginationQuery());
+
+        Assert.Empty(result.Items);
+        Assert.Equal(0, result.TotalCount);
+        Assert.Equal(0, result.TotalPages);
+    }
+
+    /// <summary>
+    ///     Searching for a holder nobody holds is a not-found rather than an empty page.
+    /// </summary>
+    [Fact]
+    public async Task GetByPolicyHolder_NonExistentHolder_ThrowsNotFound()
+    {
+        await Assert.ThrowsAsync<NotFoundException>(() =>
+            _policiesService.GetByPolicyHolder(99999, new PaginationQuery()));
+    }
+
+    /// <summary>
+    ///     The status filter narrows a holder's policies, and the count describes the filtered set.
+    /// </summary>
+    [Fact]
+    public async Task GetByPolicyHolder_StatusFilter_CountsOnlyTheFilteredSet()
+    {
+        var holder = await SeedHolderEntityAsync();
+        await SeedPolicy(holder.Id);
+        var cancelled = await SeedPolicy(holder.Id);
+        await SeedPolicy(holder.Id);
+
+        await _policiesService.Cancel(cancelled);
+
+        var result = await _policiesService.GetByPolicyHolder(
+            holder.Id, new PaginationQuery(), PolicyStatus.Active);
+
+        Assert.Equal(2, result.TotalCount);
+        Assert.All(result.Items, p => Assert.Equal(PolicyStatus.Active, p.Status));
+    }
+
+    /// <summary>
+    ///     The search pages the holder's own policies: the total and the page slice are both scoped to
+    ///     them, not to the whole table.
+    /// </summary>
+    [Fact]
+    public async Task GetByPolicyHolder_PagesTheHoldersOwnPolicies()
+    {
+        var jane = await SeedHolderEntityAsync("Jane", "Doe", "jane@example.com");
+        var john = await SeedHolderEntityAsync("John", "Smith", "john@example.com");
+
+        var first = await SeedPolicy(jane.Id, 100m);
+        var second = await SeedPolicy(jane.Id, 200m);
+        // Belongs to someone else and must not appear in either total.
+        await SeedPolicy(john.Id, 300m);
+
+        var result = await _policiesService.GetByPolicyHolder(
+            jane.Id, new PaginationQuery { SortBy = "premium", PageSize = 1 });
+
+        Assert.Equal(2, result.TotalCount);
+        Assert.Equal(2, result.TotalPages);
+        var policy = Assert.Single(result.Items);
+        Assert.Equal(first, policy.Id);
+        Assert.Equal(100m, policy.Premium);
+
+        result.Page = 2;
+        var secondPage = await _policiesService.GetByPolicyHolder(
+            jane.Id, new PaginationQuery { SortBy = "premium", PageSize = 1, Page = 2 });
+
+        Assert.Equal(second, Assert.Single(secondPage.Items).Id);
     }
 }

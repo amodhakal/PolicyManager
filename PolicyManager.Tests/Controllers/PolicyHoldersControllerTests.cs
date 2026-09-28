@@ -1,6 +1,7 @@
 using System.Net;
 using System.Net.Http.Json;
 using PolicyManager.DTOs;
+using PolicyManager.Models.Enums;
 using PolicyManager.Tests.Infrastructure;
 
 namespace PolicyManager.Tests.Controllers;
@@ -230,5 +231,90 @@ public class PolicyHoldersControllerTests : ApiIntegrationTestBase
 
         var get = await Client.GetAsync($"/api/policies/{policyId}");
         Assert.Equal(HttpStatusCode.OK, get.StatusCode);
+    }
+
+    /// <summary>
+    ///     A holder's policy search returns that holder's policies, and names the holder they belong
+    ///     to.
+    /// </summary>
+    [Fact]
+    public async Task GetPolicies_ReturnsOnlyThatHoldersPolicies()
+    {
+        var jane = await SeedHolderAsync(_createPolicyHolderDto);
+        var john = await SeedHolderAsync(new CreatePolicyHolderDto
+        {
+            FirstName = "John", LastName = "Smith", Email = "john@gmail.com"
+        });
+
+        await SeedPolicyAsync(jane, 100m);
+        await SeedPolicyAsync(jane, 200m);
+        await SeedPolicyAsync(john, 300m);
+
+        var res = await Client.GetAsync($"/api/policyholders/{jane}/policies");
+        Assert.Equal(HttpStatusCode.OK, res.StatusCode);
+
+        var page = await res.Content.ReadFromJsonAsync<PagedResult<PolicyDto>>();
+        Assert.NotNull(page);
+        Assert.Equal(2, page!.TotalCount);
+        Assert.Equal(2, page.Items.Count);
+        Assert.All(page.Items, p => Assert.Equal(jane, p.PolicyHolderId));
+        Assert.All(page.Items, p => Assert.Equal("Jane Doe", p.PolicyholderName));
+    }
+
+    /// <summary>
+    ///     A policyholder who owns nothing matching the filter gets an empty page, not a 404.
+    /// </summary>
+    [Fact]
+    public async Task GetPolicies_HolderWithNoPolicies_ReturnsAnEmptyPage()
+    {
+        var id = await SeedHolderAsync(_createPolicyHolderDto);
+
+        var res = await Client.GetAsync($"/api/policyholders/{id}/policies");
+        Assert.Equal(HttpStatusCode.OK, res.StatusCode);
+
+        var page = await res.Content.ReadFromJsonAsync<PagedResult<PolicyDto>>();
+        Assert.NotNull(page);
+        Assert.Empty(page!.Items);
+        Assert.Equal(0, page.TotalCount);
+    }
+
+    /// <summary>
+    ///     Searching the policies of a policyholder who does not exist is a 404, so an empty book is
+    ///     never confused with the wrong holder.
+    /// </summary>
+    [Fact]
+    public async Task GetPolicies_NonExistentHolder_Returns404()
+    {
+        var res = await Client.GetAsync("/api/policyholders/99999/policies");
+        Assert.Equal(HttpStatusCode.NotFound, res.StatusCode);
+    }
+
+    /// <summary>
+    ///     The search pages and filters like the unfiltered list does.
+    /// </summary>
+    [Fact]
+    public async Task GetPolicies_PageAndStatusFilter_Compose()
+    {
+        var id = await SeedHolderAsync(_createPolicyHolderDto);
+        await SeedPolicyAsync(id, 100m);
+        var cancelled = await SeedPolicyAsync(id, 300m);
+        await SeedPolicyAsync(id, 200m);
+
+        await Client.DeleteAsync($"/api/policies/{cancelled}");
+
+        var res = await Client.GetAsync(
+            $"/api/policyholders/{id}/policies?status=Active&page=2&pageSize=1&sortBy=premium");
+        Assert.Equal(HttpStatusCode.OK, res.StatusCode);
+
+        var page = await res.Content.ReadFromJsonAsync<PagedResult<PolicyDto>>();
+        Assert.NotNull(page);
+        Assert.Equal(2, page!.TotalCount);
+        Assert.Equal(2, page.TotalPages);
+
+        // The active policies are 100 and 200, so ascending by premium the second page is the 200.
+        Assert.Equal(200m, Assert.Single(page.Items).Premium);
+        Assert.Equal(PolicyStatus.Active, page.Items[0].Status);
+        Assert.True(page.HasPrevious);
+        Assert.False(page.HasNext);
     }
 }
