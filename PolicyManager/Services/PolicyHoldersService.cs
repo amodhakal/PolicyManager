@@ -58,12 +58,13 @@ public class PolicyHoldersService(AppDbContext context, IMemoryCache cache) : IP
             Email = p.Email
         }).ToListAsync(cancellationToken);
 
-        cache.Set(CacheKeys.AllPolicyHolders, holders, new MemoryCacheEntryOptions
-        {
-            Size = CollectionOverheadBytes + holders.Count * PolicyHolderSizeBytes,
-            Priority = CacheItemPriority.Low,
-            AbsoluteExpirationRelativeToNow = AllPolicyHoldersExpiration
-        });
+        if (holders.Count > 0)
+            cache.Set(CacheKeys.AllPolicyHolders, holders, new MemoryCacheEntryOptions
+            {
+                Size = CollectionOverheadBytes + holders.Count * PolicyHolderSizeBytes,
+                Priority = CacheItemPriority.Low,
+                AbsoluteExpirationRelativeToNow = AllPolicyHoldersExpiration
+            });
 
         return holders;
     }
