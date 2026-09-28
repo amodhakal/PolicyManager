@@ -45,15 +45,10 @@ dotnet ef database update --project PolicyManager/PolicyManager.csproj
 dotnet run --project PolicyManager/PolicyManager.csproj
 ```
 
-**Migrations are required, and they are currently blocked.** The schema is managed by
-code-first EF Core migrations and nothing creates the tables for you — the API will fail to
-serve any request that touches the database until migrations have been applied. Step 2 is
-the command, run from the repository root.
-
-However, that command **fails today** with EF Core's `PendingModelChangesWarning` error,
-because the model is ahead of the last migration snapshot. See
-[Known Issues](#known-issues) below. Run `docker compose up -d db` and create the
-`PolicyManager` database by hand in the meantime if you need a working local database.
+**Migrations are required.** The schema is managed by code-first EF Core migrations and
+nothing creates the tables for you — the API will fail to serve any request that touches the
+database until migrations have been applied. Step 2 is the command, run from the repository
+root.
 
 To create a new migration after changing a model:
 
@@ -124,12 +119,6 @@ in `.env.example` is deliberately invalid and will crash-loop the database conta
 
 ## Known Issues
 
-- **`dotnet ef database update` currently fails.** EF Core 9 raises
-  `PendingModelChangesWarning` as an error, and the transactional-outbox commit added the
-  `OutboxMessages` DbSet and index **without a migration**. The model is therefore ahead of the
-  last snapshot and no migration can be applied until a migration is added for `OutboxMessage`.
-  Until then the API cannot create its own schema. The unit tests do not catch this because
-  they run on the EF InMemory provider, which builds its schema from the model instead.
 - **The database is never created for you.** `compose.yaml` provisions the SQL Server
   *instance* but no `PolicyManager` database. `dotnet ef database update` and the container
   entrypoint both connect with `Database=PolicyManager`, so that database must exist first.
@@ -145,14 +134,44 @@ dotnet test
 ```
 
 The suite is xUnit, with Moq for mocking the service interfaces and the EF Core InMemory
-provider for `AppDbContext`, so it needs no SQL Server instance. Coverage is collected via
-coverlet.
+provider for `AppDbContext`, so the default run needs no SQL Server instance. Coverage is
+collected via coverlet.
+
+### SQL Server tests
+
+The InMemory provider builds its schema from the model and enforces **no unique indexes, no
+foreign keys, no column precision, no string length limits and no transactions**. A suite that
+only ever runs against it reports green while the application is broken against the database it
+actually ships with. `PolicyManager.Tests/Integration/` therefore covers the constraints that
+provider hides, against a real SQL Server started per run by
+[Testcontainers](https://dotnet.testcontainers.org/):
+
+```bash
+# Everything except the container-backed tests (the default)
+dotnet test
+
+# Only the SQL Server tests; needs a running Docker daemon
+dotnet test --filter "Category=SqlServer"
+```
+
+The container image is pinned to the same tag `compose.yaml` uses, and the schema is built by
+running the real EF migrations rather than `EnsureCreated`, so these tests also prove the
+migration scripts are valid and complete. The container is shared across the collection, so it
+starts once per run.
+
+CI splits this into three independent jobs: the InMemory suite with coverage, the
+SQL Server suite, and a `dotnet ef migrations has-pending-model-changes` check. That last one
+matters because a model change shipped without a matching migration is invisible to both test
+suites — the InMemory provider builds from the model, and the SQL Server tests would fail on a
+missing table rather than on the drift.
 
 Shared test infrastructure lives in `PolicyManager.Tests/Infrastructure/`:
 `InMemoryApiFactory` swaps the SQL Server `AppDbContext` for the InMemory provider,
-`ApiIntegrationTestBase` provides the client, lifecycle and holder/policy/claim seeding
-helpers, and `ServiceTestBase` provides a per-test `DbContext` and `Dispose` for the service
-tests. Add new tests by deriving from those rather than repeating the setup.
+`SqlServerApiFactory` repoints the application at the container and stops the outbox poller so it
+cannot drain rows a test is asserting on, `ApiIntegrationTestBase` provides the client, lifecycle
+and holder/policy/claim seeding helpers, `ServiceTestBase` provides a per-test `DbContext` and
+`Dispose` for the service tests, and `SqlServerFixture`/`SqlServerTestBase` own the container.
+Add new tests by deriving from those rather than repeating the setup.
 
 CI runs `dotnet test` on every push to `main` and on every pull request targeting `main`,
 excluding `Migrations/**` from coverage, and uploads the report to Codecov. A second,
@@ -249,3 +268,57 @@ Be aware that the collection entry is a cache-invalidation seam: writes made **o
 service (direct `AppDbContext` use, a future bulk import) do not invalidate it and will be
 masked until the entry expires.
 
+
+---
+
+## Transactional Outbox
+
+Policy creation, policy updates and cancellation, claim filing and claim adjudication each
+write a row to an `OutboxMessages` table in the **same database transaction** as the entity
+change. `OutboxProcessorBackgroundService` polls that table and dispatches anything not yet
+processed, so a domain change and the notification it produces can never diverge: either both
+rows commit or neither does.
+
+The write path is centralised in `PolicyManager/Data/OutboxTransaction.cs`:
+
+- `AddWithOutboxAsync` stages a new entity, and `SaveWithOutboxAsync` flushes changes to an
+  already tracked one.
+- Both open an explicit transaction, `SaveChangesAsync` first so the database assigns the
+  generated identifier, **then** serialise the payload, write the message, and commit.
+
+The ordering matters. Serialising before the insert produces a message whose `Id` is always
+`0`, because the key is only assigned by the database on insert. Flushing first and
+serialising second is what makes the published payload carry a real identifier, and the
+explicit transaction is what preserves atomicity across the two writes.
+
+Messages carry a `Type` discriminator (`PolicyCreated`, `PolicyUpdated`, `PolicyCancelled`,
+`PolicyHolderCreated`, `ClaimCreated`, `ClaimStatusUpdated`) and a JSON `Content` payload.
+
+### Delivery
+
+`OutboxDispatcher` claims a batch, publishes it, and records the outcome of each message. The
+claim is a read narrowed to plausible rows followed by a **conditional** `UPDATE` that only
+touches rows no other processor currently holds, so when the API is scaled horizontally each
+message is claimed by exactly one instance. The claim is a lease (`LockedUntil`), not a
+permanent lock, so an instance that dies mid-batch releases its work instead of stranding it.
+
+Failures are retried on an exponential backoff (`BaseRetryDelay * 2^(attempt-1)`, capped at
+`MaxRetryDelay`) recorded in `NextAttemptAt`, and `AttemptCount`/`Error` track the history — the
+`Error` column was previously written but never acted on, so a failing message was retried
+forever at a fixed five-second cadence. After `MaxAttempts` the message is **dead-lettered**:
+`DeadLetteredAt` is stamped and the row leaves the poll set. That is deliberately distinct from
+`ProcessedAt`, because a dead-lettered message was never delivered and treating it as processed
+would make the table look drained when it is not.
+
+The poll interval adapts to the backlog — `BusyDelay` after a pass that delivered something,
+exponential backoff up to `MaxIdleDelay` while idle — so a busy outbox drains promptly without an
+idle instance querying the table several times a second.
+
+Everything above is configured under the `Outbox` section of `appsettings.json`:
+`BatchSize`, `LockDuration`, `BusyDelay`, `MinIdleDelay`, `MaxIdleDelay`, `BaseRetryDelay`,
+`MaxRetryDelay`, `MaxAttempts`.
+
+`IOutboxPublisher` is the transport seam. The registered `LoggingOutboxPublisher` records each
+message and returns success — there is no broker on the other end yet, so **messages are drained
+and discarded**. Replacing it with a real transport means registering a different
+`IOutboxPublisher`; the claiming, retry and dead-lettering policy is unaffected.

@@ -2,6 +2,8 @@ using System.Reflection;
 using System.Text.RegularExpressions;
 using DotNetEnv;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.Extensions.DependencyInjection.Extensions;
+using PolicyManager.Configuration;
 using PolicyManager.Data;
 using PolicyManager.Services;
 
@@ -33,9 +35,15 @@ var connectionString = ResolveConnectionString(builder.Configuration, builder.En
 builder.Services.AddDbContext<AppDbContext>(options =>
     options.UseSqlServer(connectionString));
 
+builder.Services.Configure<OutboxOptions>(builder.Configuration.GetSection(OutboxOptions.SectionName));
+
 builder.Services.AddScoped<IPolicyHoldersService, PolicyHoldersService>();
 builder.Services.AddScoped<IPoliciesService, PoliciesService>();
 builder.Services.AddScoped<IClaimsService, ClaimsService>();
+
+builder.Services.TryAddSingleton(TimeProvider.System);
+builder.Services.TryAddSingleton<IOutboxPublisher, LoggingOutboxPublisher>();
+builder.Services.AddScoped<OutboxDispatcher>();
 builder.Services.AddHostedService<OutboxProcessorBackgroundService>();
 
 var app = builder.Build();

@@ -1,70 +1,82 @@
-using System.Text.Json;
-using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
+using Microsoft.Extensions.Options;
+using PolicyManager.Configuration;
 using PolicyManager.Data;
 
 namespace PolicyManager.Services;
 
 /// <summary>
-/// Background service that polls the transactional outbox table and dispatches unprocessed messages.
+///     Polls the transactional outbox on an adaptive interval and dispatches due messages.
 /// </summary>
+/// <remarks>
+///     The loop does nothing but schedule: claiming, publishing, retry and dead-lettering all live in
+///     <see cref="OutboxDispatcher" />. The interval adapts to the backlog — a short delay while there
+///     is work, exponential backoff up to a ceiling while idle — so a busy outbox drains promptly
+///     without a permanently idle instance querying the table several times a second.
+/// </remarks>
 public class OutboxProcessorBackgroundService(
     IServiceScopeFactory scopeFactory,
+    IOptions<OutboxOptions> options,
+    TimeProvider timeProvider,
     ILogger<OutboxProcessorBackgroundService> logger) : BackgroundService
 {
+    private readonly OutboxOptions _options = options.Value;
+
     /// <summary>
-    ///     Polls the outbox table on a fixed interval and dispatches unprocessed messages.
+    ///     Polls until the host shuts down.
     /// </summary>
     /// <param name="stoppingToken">Token used to signal host shutdown.</param>
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
     {
-        logger.LogInformation("Outbox Processor Background Service started.");
+        logger.LogInformation("Outbox processor started.");
+
+        var idleDelay = _options.MinIdleDelay;
 
         while (!stoppingToken.IsCancellationRequested)
         {
+            var delivered = 0;
+
             try
             {
                 using var scope = scopeFactory.CreateScope();
-                var dbContext = scope.ServiceProvider.GetRequiredService<AppDbContext>();
-
-                var messages = await dbContext.OutboxMessages
-                    .Where(m => m.ProcessedAt == null)
-                    .OrderBy(m => m.CreatedAt)
-                    .Take(20)
-                    .ToListAsync(stoppingToken);
-
-                foreach (var message in messages)
-                {
-                    try
-                    {
-                        // Simulate publishing to message broker (RabbitMQ / MassTransit)
-                        logger.LogInformation("Processing outbox message {MessageId} of type {MessageType}", message.Id, message.Type);
-
-                        // Here we could resolve IBus / IPublishEndpoint and publish message.content
-                        // For demonstration and transactional outbox guarantee, we mark as processed.
-                        message.ProcessedAt = DateTime.UtcNow;
-                        message.Error = null;
-                    }
-                    catch (Exception ex)
-                    {
-                        logger.LogError(ex, "Failed to process outbox message {MessageId}", message.Id);
-                        message.Error = ex.Message;
-                    }
-                }
-
-                if (messages.Count > 0)
-                {
-                    await dbContext.SaveChangesAsync(stoppingToken);
-                }
+                var dispatcher = scope.ServiceProvider.GetRequiredService<OutboxDispatcher>();
+                delivered = await dispatcher.DispatchBatchAsync(stoppingToken);
+            }
+            catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested)
+            {
+                break;
             }
             catch (Exception ex)
             {
-                logger.LogError(ex, "An error occurred while processing outbox messages.");
+                // A failed pass is expected while the database is restarting or unreachable. It must
+                // not kill the host, and it counts as idle so the backoff grows instead of hammering.
+                logger.LogError(ex, "Outbox dispatch pass failed.");
             }
 
-            await Task.Delay(TimeSpan.FromSeconds(5), stoppingToken);
+            var delay = delivered > 0 ? _options.BusyDelay : idleDelay;
+            if (delivered == 0) idleDelay = NextIdleDelay(idleDelay);
+
+            // The delay sits outside the try above on purpose: awaiting it with a cancelled token
+            // throws OperationCanceledException, and letting that escape ExecuteAsync surfaces as an
+            // unhandled exception during host shutdown. Caught here so a normal stop is a clean exit.
+            try
+            {
+                await Task.Delay(delay, timeProvider, stoppingToken);
+            }
+            catch (OperationCanceledException)
+            {
+                break;
+            }
         }
+
+        logger.LogInformation("Outbox processor stopped.");
+    }
+
+    private TimeSpan NextIdleDelay(TimeSpan current)
+    {
+        var next = current * 2;
+        return next > _options.MaxIdleDelay ? _options.MaxIdleDelay : next;
     }
 }

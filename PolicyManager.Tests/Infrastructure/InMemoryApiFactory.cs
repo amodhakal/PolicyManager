@@ -1,6 +1,7 @@
 using Microsoft.AspNetCore.Hosting;
 using Microsoft.AspNetCore.Mvc.Testing;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.EntityFrameworkCore.Diagnostics;
 using Microsoft.Extensions.DependencyInjection;
 using PolicyManager.Data;
 
@@ -11,10 +12,9 @@ namespace PolicyManager.Tests.Infrastructure;
 ///     <see cref="AppDbContext" /> registration for a per-factory in-memory database.
 /// </summary>
 /// <remarks>
-///     <see cref="Program" /> registers the context against a SQL Server connection string that is
-///     not available during tests, so every descriptor that resolves the context has to be removed
-///     before the in-memory registration is added. The removal is intentionally broad and lives here
-///     so that its fragile matching logic exists in exactly one place.
+///     Fast and dependency-free, so it backs the bulk of the suite. It cannot represent unique
+///     indexes, foreign keys, column precision or transactions; tests that need those run against
+///     real SQL Server via <see cref="SqlServerApiFactory" /> instead.
 /// </remarks>
 public class InMemoryApiFactory : WebApplicationFactory<Program>
 {
@@ -28,17 +28,15 @@ public class InMemoryApiFactory : WebApplicationFactory<Program>
     {
         builder.ConfigureServices(services =>
         {
-            var toRemove = services
-                .Where(d => d.ServiceType == typeof(DbContextOptions<AppDbContext>)
-                            || d.ServiceType == typeof(DbContext)
-                            || d.ServiceType == typeof(AppDbContext)
-                            || (d.ImplementationType?.Name.Contains("AppDbContext") ?? false)
-                            || (d.ServiceType.FullName?.Contains("DbContextOptions") ?? false))
-                .ToList();
+            TestHostServiceOverrides.RemoveAppDbContext(services);
+            TestHostServiceOverrides.RemoveOutboxProcessor(services);
 
-            foreach (var d in toRemove) services.Remove(d);
-
-            services.AddDbContext<AppDbContext>(options => options.UseInMemoryDatabase(_databaseName));
+            services.AddDbContext<AppDbContext>(options => options
+                .UseInMemoryDatabase(_databaseName)
+                // The outbox helpers wrap the entity write and the message write in an explicit
+                // transaction. The in-memory store has no transactions, so it raises this warning
+                // instead; it is expected here and must not throw.
+                .ConfigureWarnings(w => w.Ignore(InMemoryEventId.TransactionIgnoredWarning)));
         });
     }
 }

@@ -1,4 +1,3 @@
-using System.Text.Json;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Caching.Memory;
 using PolicyManager.Data;
@@ -106,16 +105,11 @@ public class PolicyHoldersService(AppDbContext context, IMemoryCache cache) : IP
         var holder = new PolicyHolder
             { FirstName = dto.FirstName, LastName = dto.LastName, Email = dto.Email };
 
-        context.PolicyHolders.Add(holder);
-
-        var outboxMessage = new OutboxMessage
-        {
-            Type = "PolicyHolderCreated",
-            Content = JsonSerializer.Serialize(new { holder.Id, holder.FirstName, holder.LastName, holder.Email })
-        };
-        context.OutboxMessages.Add(outboxMessage);
-
-        await context.SaveChangesAsync(cancellationToken);
+        await context.AddWithOutboxAsync(
+            holder,
+            "PolicyHolderCreated",
+            h => new { h.Id, h.FirstName, h.LastName, h.Email },
+            cancellationToken);
 
         cache.Remove(CacheKeys.AllPolicyHolders);
         cache.Remove(CacheKeys.ById(holder.Id));
