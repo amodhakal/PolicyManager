@@ -7,7 +7,7 @@ namespace PolicyManager.Models;
 /// <summary>
 ///     Represents an insurance policy held by a policyholder.
 /// </summary>
-public class Policy
+public class Policy : IAuditableEntity
 {
     /// <summary>
     ///     The unique identifier of the policy.
@@ -79,4 +79,22 @@ public class Policy
     ///     The collection of claims associated with this policy.
     /// </summary>
     public ICollection<Claim> Claims { get; set; } = new List<Claim>();
+
+    /// <inheritdoc />
+    [Required]
+    public DateTime CreatedAt { get; set; }
+
+    /// <inheritdoc />
+    [MaxLength(100)]
+    public string? CreatedBy { get; set; }
+
+    /// <inheritdoc />
+    public DateTime? UpdatedAt { get; set; }
+
+    /// <inheritdoc />
+    [MaxLength(100)]
+    public string? UpdatedBy { get; set; }
+
+    /// <inheritdoc />
+    public byte[] RowVersion { get; set; } = [];
 }

@@ -74,6 +74,12 @@ builder.Services.AddScoped<IPolicyHoldersService, PolicyHoldersService>();
 builder.Services.AddScoped<IPoliciesService, PoliciesService>();
 builder.Services.AddScoped<IClaimsService, ClaimsService>();
 
+// The audit columns are stamped from here rather than by each service, so a new write path is
+// audited by default. ICurrentUser is scoped because it reads the ambient HTTP context, which
+// differs per request.
+builder.Services.AddHttpContextAccessor();
+builder.Services.AddScoped<ICurrentUser, HttpContextCurrentUser>();
+
 builder.Services.TryAddSingleton(TimeProvider.System);
 builder.Services.TryAddSingleton<IOutboxPublisher, LoggingOutboxPublisher>();
 builder.Services.AddScoped<OutboxDispatcher>();

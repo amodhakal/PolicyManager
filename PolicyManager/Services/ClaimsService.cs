@@ -43,7 +43,10 @@ public class ClaimsService(AppDbContext context) : IClaimsService
                 FiledAt = c.FiledAt,
                 DecisionDate = c.DecisionDate,
                 DecidedBy = c.DecidedBy,
-                AdjusterNotes = c.AdjusterNotes
+                AdjusterNotes = c.AdjusterNotes,
+                UpdatedAt = c.UpdatedAt,
+                UpdatedBy = c.UpdatedBy,
+                RowVersion = ConcurrencyTokens.ToToken(c.RowVersion)
             })
             .ToListAsync(cancellationToken);
 
@@ -113,7 +116,10 @@ public class ClaimsService(AppDbContext context) : IClaimsService
                 FiledAt = c.FiledAt,
                 DecisionDate = c.DecisionDate,
                 DecidedBy = c.DecidedBy,
-                AdjusterNotes = c.AdjusterNotes
+                AdjusterNotes = c.AdjusterNotes,
+                UpdatedAt = c.UpdatedAt,
+                UpdatedBy = c.UpdatedBy,
+                RowVersion = ConcurrencyTokens.ToToken(c.RowVersion)
             })
             .FirstOrDefaultAsync(cancellationToken);
     }
@@ -175,6 +181,7 @@ public class ClaimsService(AppDbContext context) : IClaimsService
         UpdateClaimStatusDto dto,
         string? decidedBy = null,
         string? adjusterNotes = null,
+        string? rowVersion = null,
         CancellationToken cancellationToken = default)
     {
         var target = dto.Status ?? throw new InvalidOperationException(
@@ -195,6 +202,8 @@ public class ClaimsService(AppDbContext context) : IClaimsService
         claim.DecisionDate = DateTime.UtcNow;
         claim.DecidedBy = decidedBy;
         claim.AdjusterNotes = adjusterNotes;
+
+        context.ApplyOriginalValue(claim, rowVersion);
 
         await context.SaveWithOutboxAsync(
             claim,

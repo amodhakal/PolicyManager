@@ -453,6 +453,55 @@ it, so they stayed invisible to every list reader until the entry expired.
 
 ---
 
+## Auditing and Optimistic Concurrency
+
+Every `PolicyHolder`, `Policy` and `Claim` row carries `CreatedAt`, `CreatedBy`, `UpdatedAt`,
+`UpdatedBy` and a `RowVersion` concurrency token.
+
+### Who made a change
+
+The audit columns are stamped by `AppDbContext.SaveChanges` for every added or modified entity, not
+by the services. A new write path is therefore audited by default instead of only if its author
+remembered to pass an actor down through the call chain. The actor comes from `ICurrentUser`, which
+reads the ambient `ClaimsPrincipal`; with nothing authenticated it records the fixed token `system`,
+the same value a background worker such as the outbox processor produces.
+
+`UpdatedAt`/`UpdatedBy` are marked `IsModified` explicitly. Without that, re-saving a row with an
+unchanged value produces no EF change for those properties, and the timestamp of the last real edit
+would be silently dropped.
+
+### Losing updates
+
+`RowVersion` is a SQL Server `rowversion` column, so the database maintains it and a client can only
+ever echo back a value the database issued. EF appends it to the `WHERE` clause of every update; if
+the row moved on in the meantime, zero rows are affected and the write is rejected.
+
+The token is returned as a base64 `rowVersion` field on every read of a policy, claim or policyholder:
+
+```http
+GET /api/policies/1
+{ "id": 1, "policyNumber": "POL-2026-000001", "premium": 500.00, "rowVersion": "AAAAAAAAB9E=" }
+
+PUT /api/policies/1
+{ "premium": 750.00, "rowVersion": "AAAAAAAAB9E=" }
+```
+
+A mismatched token is reported as **409 Conflict** with `"rule": "stale-row-version"`; the record is
+left untouched. The token is optional on every write — omitting it writes unconditionally, which
+keeps older clients working — and a value that is not valid base64 is rejected rather than
+silently dropped, because a caller who believes they have concurrency protection and does not is
+worse off than one who was never offered it.
+
+Supported on `PUT /api/policies/{id}`, `DELETE /api/policies/{id}` (as a `?rowVersion=` query
+parameter, since a DELETE carries no body) and `PATCH /api/claims/{id}/status`.
+
+### Migration
+
+`PolicyAuditAndConcurrency` adds the columns and backfills them. `Policies.CreatedAt` and
+`Claims.CreatedAt` are added nullable, backfilled from `StartDate` and `FiledAt` respectively, then
+tightened to `NOT NULL` — adding them straight away as `NOT NULL` would stamp every pre-existing row
+with the CLR default of `0001-01-01`, which reads as a real date in an audit report.
+
 ## Errors
 
 Every failure leaves the API as [RFC 9457](https://www.rfc-editor.org/rfc/rfc9457) ProblemDetails

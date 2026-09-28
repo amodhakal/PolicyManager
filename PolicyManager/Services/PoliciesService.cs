@@ -49,7 +49,10 @@ public class PoliciesService(AppDbContext context) : IPoliciesService
                 Premium = p.Premium,
                 Status = p.Status,
                 PolicyholderName = $"{p.PolicyHolder.FirstName} {p.PolicyHolder.LastName}",
-                CoverageLimit = p.CoverageLimit
+                CoverageLimit = p.CoverageLimit,
+                UpdatedAt = p.UpdatedAt,
+                UpdatedBy = p.UpdatedBy,
+                RowVersion = ConcurrencyTokens.ToToken(p.RowVersion)
             })
             .ToListAsync(cancellationToken);
 
@@ -116,7 +119,10 @@ public class PoliciesService(AppDbContext context) : IPoliciesService
                 Premium = p.Premium,
                 Status = p.Status,
                 PolicyholderName = $"{p.PolicyHolder.FirstName} {p.PolicyHolder.LastName}",
-                CoverageLimit = p.CoverageLimit
+                CoverageLimit = p.CoverageLimit,
+                UpdatedAt = p.UpdatedAt,
+                UpdatedBy = p.UpdatedBy,
+                RowVersion = ConcurrencyTokens.ToToken(p.RowVersion)
             })
             .FirstOrDefaultAsync(cancellationToken);
     }
@@ -177,6 +183,8 @@ public class PoliciesService(AppDbContext context) : IPoliciesService
         if (dto.Status is not null) policy.Status = dto.Status.Value;
         if (dto.Premium is not null) policy.Premium = dto.Premium.Value;
 
+        context.ApplyOriginalValue(policy, dto.RowVersion);
+
         await context.SaveWithOutboxAsync(
             policy,
             "PolicyUpdated",
@@ -188,14 +196,22 @@ public class PoliciesService(AppDbContext context) : IPoliciesService
     ///     Cancels an existing policy by setting its status to Cancelled and recording an outbox message.
     /// </summary>
     /// <param name="id">The policy identifier.</param>
+    /// <param name="rowVersion">
+    ///     The concurrency token the caller read, or null to cancel unconditionally.
+    /// </param>
     /// <param name="cancellationToken">Token used to cancel the operation.</param>
     /// <exception cref="NotFoundException">The policy does not exist.</exception>
-    public async Task Cancel(int id, CancellationToken cancellationToken = default)
+    public async Task Cancel(
+        int id,
+        string? rowVersion = null,
+        CancellationToken cancellationToken = default)
     {
         var policy = await context.Policies.FindAsync([id], cancellationToken)
             ?? throw new NotFoundException("Policy", id);
 
         policy.Status = PolicyStatus.Cancelled;
+
+        context.ApplyOriginalValue(policy, rowVersion);
 
         await context.SaveWithOutboxAsync(
             policy,

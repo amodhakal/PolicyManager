@@ -29,6 +29,10 @@ public class PoliciesController(IPoliciesService policiesService) : ControllerBa
     /// <param name="cancellationToken">Token used to cancel the operation.</param>
     /// <returns>A page of policies matching the filter criteria.</returns>
     /// <response code="200">Returns the requested page of policies and the total matching count.</response>
+    /// <remarks>
+    ///     Every policy in the response carries its <c>rowVersion</c>; echo it back on a subsequent
+    ///     update or cancel to make that write conditional on nothing having changed since.
+    /// </remarks>
     [HttpGet]
     public async Task<ActionResult<PagedResult<PolicyDto>>> GetAll(
         [FromQuery] PaginationQuery pagination,
@@ -45,7 +49,7 @@ public class PoliciesController(IPoliciesService policiesService) : ControllerBa
     /// <param name="id">The policy identifier.</param>
     /// <param name="cancellationToken">Token used to cancel the operation.</param>
     /// <returns>The policy if found; otherwise, not found.</returns>
-    /// <response code="200">Returns the policy.</response>
+    /// <response code="200">Returns the policy, including its audit fields and <c>rowVersion</c>.</response>
     /// <response code="404">Policy not found.</response>
     [HttpGet("{id:int}")]
     public async Task<ActionResult<PolicyDto>> GetById(int id, CancellationToken cancellationToken)
@@ -79,6 +83,7 @@ public class PoliciesController(IPoliciesService policiesService) : ControllerBa
     /// <returns>No content if successful.</returns>
     /// <response code="200">Policy updated successfully.</response>
     /// <response code="404">Policy not found.</response>
+    /// <response code="409">The policy changed since it was read.</response>
     [HttpPut("{id:int}")]
     public async Task<ActionResult> Update(int id, UpdatePolicyDto dto, CancellationToken cancellationToken)
     {
@@ -90,14 +95,22 @@ public class PoliciesController(IPoliciesService policiesService) : ControllerBa
     ///     Cancels an existing policy.
     /// </summary>
     /// <param name="id">The policy identifier.</param>
+    /// <param name="rowVersion">
+    ///     The concurrency token read from the policy, or null to cancel unconditionally. Sent as a
+    ///     query parameter because a DELETE carries no body.
+    /// </param>
     /// <param name="cancellationToken">Token used to cancel the operation.</param>
     /// <returns>No content if successful.</returns>
     /// <response code="200">Policy canceled successfully.</response>
     /// <response code="404">Policy not found.</response>
+    /// <response code="409">The policy changed since it was read.</response>
     [HttpDelete("{id:int}")]
-    public async Task<ActionResult> Cancel(int id, CancellationToken cancellationToken)
+    public async Task<ActionResult> Cancel(
+        int id,
+        [FromQuery] string? rowVersion,
+        CancellationToken cancellationToken)
     {
-        await policiesService.Cancel(id, cancellationToken);
+        await policiesService.Cancel(id, rowVersion, cancellationToken);
         return Ok();
     }
 }

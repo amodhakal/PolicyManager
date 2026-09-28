@@ -111,6 +111,19 @@ public class GlobalExceptionHandler(
                 Type = "https://httpstatuses.com/400"
             },
 
+            // A rowversion mismatch: the row changed between the caller's read and its write. That
+            // is a conflict the caller can resolve by re-reading and retrying, not a server fault,
+            // and reporting it as a 500 would both mislead them and bury it in 5xx alerting.
+            DbUpdateConcurrencyException concurrency => new ProblemDetails
+            {
+                Status = StatusCodes.Status409Conflict,
+                Title = "Conflict",
+                Detail = "The record was modified by someone else after it was read. " +
+                         "Re-read it and reapply the change.",
+                Type = "https://httpstatuses.com/409",
+                Extensions = new Dictionary<string, object?> { ["rule"] = "stale-row-version" }
+            },
+
             DbUpdateException dbUpdate => ClassifyDbUpdate(dbUpdate),
 
             // Only reachable for a cancellation the server caused, such as an EF command timeout:

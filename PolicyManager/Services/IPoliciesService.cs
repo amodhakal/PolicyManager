@@ -51,6 +51,14 @@ public interface IPoliciesService
     /// </summary>
     /// <exception cref="Exceptions.NotFoundException">The policy does not exist.</exception>
     /// <param name="id">The policy identifier.</param>
+    /// <param name="id">The policy identifier.</param>
+    /// <param name="rowVersion">
+    ///     The concurrency token the caller read, or null to cancel unconditionally. A mismatch is
+    ///     reported as a conflict rather than cancelling a policy that has since changed.
+    /// </param>
     /// <param name="cancellationToken">Token used to cancel the operation.</param>
-    public Task Cancel(int id, CancellationToken cancellationToken = default);
+    public Task Cancel(
+        int id,
+        string? rowVersion = null,
+        CancellationToken cancellationToken = default);
 }

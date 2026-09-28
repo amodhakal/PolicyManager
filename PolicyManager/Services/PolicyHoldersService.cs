@@ -66,7 +66,10 @@ public class PolicyHoldersService(
                 Id = h.Id,
                 FirstName = h.FirstName,
                 LastName = h.LastName,
-                Email = h.Email
+                Email = h.Email,
+                UpdatedAt = h.UpdatedAt,
+                UpdatedBy = h.UpdatedBy,
+                RowVersion = ConcurrencyTokens.ToToken(h.RowVersion)
             })
             .ToListAsync(cancellationToken);
 
@@ -134,7 +137,15 @@ public class PolicyHoldersService(
 
         var holder = await context.PolicyHolders.Where(p => p.Id == id)
             .Select(p => new PolicyHolderDto
-                { Id = p.Id, FirstName = p.FirstName, LastName = p.LastName, Email = p.Email })
+            {
+                Id = p.Id,
+                FirstName = p.FirstName,
+                LastName = p.LastName,
+                Email = p.Email,
+                UpdatedAt = p.UpdatedAt,
+                UpdatedBy = p.UpdatedBy,
+                RowVersion = ConcurrencyTokens.ToToken(p.RowVersion)
+            })
             .FirstOrDefaultAsync(cancellationToken);
 
         if (holder != null) cache.Set(key, holder, new MemoryCacheEntryOptions

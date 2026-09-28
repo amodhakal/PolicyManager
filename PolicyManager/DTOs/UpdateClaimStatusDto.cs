@@ -35,4 +35,13 @@ public class UpdateClaimStatusDto
     /// </summary>
     [MaxLength(100)]
     public string? DecidedBy { get; set; }
+
+    /// <summary>
+    ///     The <c>rowVersion</c> read from this claim, or null to write unconditionally.
+    /// </summary>
+    /// <remarks>
+    ///     Meaningful here because adjudication is the step two operators are most likely to reach
+    ///     at once: without it the second decision quietly replaces the first.
+    /// </remarks>
+    public string? RowVersion { get; set; }
 }
