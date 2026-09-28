@@ -398,6 +398,8 @@ PolicyManager/
 │   ├── Services/
 │   └── Infrastructure/
 ├── scripts/
+│   ├── lib/
+│   │   └── api.ts
 │   ├── addPolicyHolders.ts
 │   ├── addPolicy.ts
 │   └── addClaim.ts
@@ -410,11 +412,23 @@ PolicyManager/
 └── README.md
 ```
 
-The `scripts/*.ts` files are standalone seed/load scripts, not part of the .NET build and
-not exercised by CI. Each one fires thousands of `POST` requests with randomly generated
-bodies (`7,417` in `addPolicyHolders.ts`, `10,000` in `addPolicy.ts` and `addClaim.ts`) at
-a hard-coded Azure host, using `fetch` and top-level `await`. There is no `package.json`
-or `tsconfig.json` in `scripts/`, so they need a runtime that supports both.
+The `scripts/*.ts` files are standalone load scripts, not part of the .NET build and not
+exercised by CI. Each one fires thousands of `POST` requests with randomly generated bodies
+(`7,417` in `addPolicyHolders.ts`, `10,000` in `addPolicy.ts` and `addClaim.ts`) using `fetch`
+and top-level `await`. There is no `package.json` or `tsconfig.json` in `scripts/`, so they need
+a runtime that strips types and provides `fetch` and Web Crypto: Node 22.6+, Bun or Deno. The
+shared plumbing lives in `scripts/lib/api.ts`.
+
+The API is behind bearer authentication, so the scripts need a token: set `API_TOKEN` to one you
+have, or set `JWT_SIGNING_KEY` to the API's `Jwt:SigningKey` and the script mints one itself
+(`JWT_ISSUER`, `JWT_AUDIENCE`, `JWT_ROLE`, `JWT_SUBJECT` and `JWT_TTL_SECONDS` are also read, and
+default to the values in `appsettings.json`). `BASE_URL` overrides the target host, which defaults
+to `http://localhost:8080` rather than a hard-coded deployment.
+
+Requests run with bounded concurrency (`LOAD_CONCURRENCY`, default 50) rather than all at once, and
+each run prints a per-status summary and **exits non-zero if any request failed**. That is the point
+of the change: the original scripts discarded the status code, so a run in which every one of
+10,000 requests was rejected still exited 0.
 
 ---
 
