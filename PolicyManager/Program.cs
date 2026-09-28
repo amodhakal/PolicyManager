@@ -159,6 +159,7 @@ builder.Services.AddSingleton<PolicyHolderWriteGenerations>();
 builder.Services.AddScoped<IPolicyHoldersService, PolicyHoldersService>();
 builder.Services.AddScoped<IPoliciesService, PoliciesService>();
 builder.Services.AddScoped<IClaimsService, ClaimsService>();
+builder.Services.AddScoped<IReportsService, ReportsService>();
 
 // Scoped, not singleton: the generator allocates through the request's own DbContext, so that a
 // failure rolls back with the rest of the unit of work rather than against a long-lived connection.
