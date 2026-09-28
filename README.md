@@ -207,8 +207,11 @@ CI without needing a database. Note that CI only runs for pull requests whose **
 | `GET` | `/api/claims/{id}` | Get claim details |
 | `PATCH` | `/api/claims/{id}/status` | Adjudicate, approve or deny the claim |
 
+### Health
 | Method | Route | Description |
 |---|---|---|
+| `GET` | `/health` | Liveness. Runs every registered check |
+| `GET` | `/health/ready` | Readiness. Runs only the checks tagged `ready` (currently `sql-server`) |
 
 Route casing follows ASP.NET Core's default: `[Route("api/[controller]")]` resolves
 `PolicyHolders` to `/api/policyholders`, `Policies` to `/api/policies`, and `Claims` to
@@ -263,6 +266,57 @@ rows written afterwards are not reflected in it.
 
 ---
 
+## Health Checks
+
+Two unauthenticated endpoints, both registered with `MapHealthChecks` and both emitting JSON:
+
+| Route | Predicate | Use |
+|---|---|---|
+| `GET /health` | every registered check | **Liveness** — is this process running |
+| `GET /health/ready` | checks tagged `ready` | **Readiness** — can this instance serve a request now |
+
+They are separate on purpose. A process whose database is unreachable is still *running*, and
+restarting it will not fix the database; only a readiness failure should take the instance out of
+rotation. A single combined endpoint would force an orchestrator to choose between restarting a
+healthy-but-isolated pod and leaving a broken one in the load balancer.
+
+There is one check today, `sql-server` (`PolicyManager/Health/SqlServerHealthCheck.cs`), tagged
+`ready`. It opens a connection through the injected `AppDbContext` and runs `SELECT 1` — the same
+connection string, provider and credentials the application itself uses, so a check that passed
+cannot coexist with a failure on every real request. It probes with a query rather than
+`CanConnectAsync` alone, because a connection validated when the process started is routinely dead
+by the time a probe first asks. A five-second per-check timeout bounds how long a hung connection
+can hold a probe open.
+
+The body carries the overall status, the per-check status, the published description and the
+timings, and the status is `200` for `Healthy` and `Degraded` and `503` for `Unhealthy`.
+
+```json
+{
+  "status": "Healthy",
+  "totalDurationMs": 3.412,
+  "checks": {
+    "sql-server": { "status": "Healthy", "description": null, "durationMs": 3.412 }
+  }
+}
+```
+
+**The failure description is constant — "The database is not reachable." — for every cause.**
+That endpoint has no authentication, and a provider exception names the server, the database, the
+login and often the path to the credential. The exception is logged instead, so it is reachable
+through the `X-Correlation-ID` of the probe rather than to anyone who can reach the port.
+
+For the same reason the built-in `HealthCheckResponseWriter.WriteMinimalPlaintext` is deliberately
+*not* used: it publishes `entry.Exception.Message`. The custom `ResponseWriter` in `Program.cs`
+emits only the status, the description the check chose to publish, and the timings. The check's
+`Data` (the exception's *type name*, never its message) is attached to the `HealthCheckResult` for
+the health-check pipeline to consume, but is not serialized to the caller.
+
+Because the app calls `UseHttpsRedirection()`, a plain-HTTP probe against a configured HTTPS port
+gets a `307` rather than a verdict. Point probes at the HTTPS endpoint. (With no HTTPS port
+configured — the container, which is published on `http://localhost:8080` — the redirection is a
+logged no-op and `/health` answers directly.)
+
 ---
 
 ## Project Structure
@@ -276,6 +330,7 @@ PolicyManager/
 │   │   └── Enums/
 │   ├── Services/
 │   ├── Data/
+│   ├── Health/
 │   ├── Migrations/
 │   ├── Properties/
 │   ├── Dockerfile
