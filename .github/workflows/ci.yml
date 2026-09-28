@@ -3,8 +3,10 @@ name: CI
 on:
   push:
     branches: [main]
+  # No branch filter on pull_request. This workflow is developed as a stack of dependent pull
+  # requests, where only the bottom one targets main, so filtering on the base branch would leave
+  # every PR above it permanently unchecked. GitHub already skips the duplicate run for PR branches.
   pull_request:
-    branches: [main]
 
 jobs:
   build-and-test:
