@@ -48,6 +48,7 @@ jobs:
       - name: Test with coverage
         run: |
           dotnet test --no-build --configuration Release \
+            --filter "Category!=SqlServer" \
             --collect:"XPlat Code Coverage" \
             --results-directory ./coverage \
             -- DataCollectionRunSettings.DataCollectors.DataCollector.Configuration.ExcludeByFile="**/Migrations/**/*.cs"
@@ -58,6 +59,67 @@ jobs:
           files: ./coverage/**/coverage.cobertura.xml
           token: ${{ secrets.CODECOV_TOKEN }}
           fail_ci_if_error: false
+
+  # The unit suite above runs entirely on the EF Core in-memory provider, which enforces no unique
+  # indexes, no foreign keys, no column precision and no transactions. These tests start a real SQL
+  # Server via Testcontainers and cover exactly the constraints that provider hides. They need Docker,
+  # so they run in their own job: a missing or slow container must not be reported as an application
+  # failure, and a schema regression must not be masked by the in-memory suite passing.
+  sql-server-tests:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup .NET
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 9.0.x
+          cache: true
+          cache-dependency-path: |
+            PolicyManager/PolicyManager.csproj
+            PolicyManager.Tests/PolicyManager.Tests.csproj
+
+      - name: Restore
+        run: dotnet restore
+
+      - name: Build
+        run: dotnet build --no-restore --configuration Release
+
+      # The first SQL Server image pull is large and the server takes tens of seconds to accept
+      # logins, so this job is given room to fail on infrastructure rather than on a timeout.
+      - name: Test against real SQL Server
+        timeout-minutes: 20
+        run: dotnet test --no-build --configuration Release --filter "Category=SqlServer"
+
+  # A model change that ships without a matching migration is invisible to the test suite: the
+  # in-memory provider builds its schema from the model, and the SQL Server tests would fail on a
+  # missing table rather than on the drift itself. EF surfaces the drift as PendingModelChangesWarning
+  # and the CLI exits non-zero, so it is checked directly.
+  migration-drift:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup .NET
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 9.0.x
+
+      - name: Install dotnet-ef
+        run: dotnet tool install --global dotnet-ef --version 9.*
+
+      - name: Build
+        run: dotnet build --configuration Release
+
+      - name: Check for pending model changes
+        run: |
+          dotnet ef migrations has-pending-model-changes \
+            --project PolicyManager/PolicyManager.csproj \
+            --no-build
 
   # No `needs:` on purpose. This job is deliberately independent of
   # build-and-test so a Dockerfile regression surfaces as its own failure, and so
