@@ -32,15 +32,9 @@ public class PaginationTests : ServiceTestBase
     public PaginationTests()
     {
         _cache = new Mock<IMemoryCache>();
-<<<<<<< HEAD
         _policyHoldersService = new PolicyHoldersService(Context, _cache.Object, new PolicyHolderWriteGenerations());
         _policiesService = new PoliciesService(Context, Numbers);
         _claimsService = new ClaimsService(Context, Numbers);
-=======
-        _policyHoldersService = new PolicyHoldersService(Context, _cache.Object);
-        _policiesService = new PoliciesService(Context, Numbers);
-        _claimsService = new ClaimsService(Context, Numbers);
->>>>>>> e48b495 (feat: issue human-readable sequential business numbers)
     }
 
     /// <summary>

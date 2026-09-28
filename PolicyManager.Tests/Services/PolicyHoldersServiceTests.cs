@@ -208,7 +208,7 @@ public class PolicyHoldersServiceTests : ServiceTestBase
     public async Task Delete_HolderStillOwningPolicies_ThrowsConflictAndKeepsEverything()
     {
         var holderId = await SeedHolder("Jane", "Doe", "jane@example.com");
-        var policiesService = new PoliciesService(Context);
+        var policiesService = new PoliciesService(Context, Numbers);
         var policyId = await policiesService.Create(new CreatePolicyDto
         {
             Type = PolicyType.Auto, PolicyHolderId = holderId, Premium = 500m,
