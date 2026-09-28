@@ -1,5 +1,6 @@
 using Microsoft.Extensions.Caching.Memory;
 using PolicyManager.DTOs;
+using PolicyManager.Exceptions;
 using PolicyManager.Services;
 using PolicyManager.Tests.Infrastructure;
 
@@ -88,6 +89,23 @@ public class PolicyHoldersServiceTests : ServiceTestBase
     {
         var result = await _policyHoldersService.GetById(99999);
         Assert.Null(result);
+    }
+
+    /// <summary>
+    ///     Verifies that creating a holder with a taken email raises ConflictException.
+    /// </summary>
+    /// <remarks>
+    ///     The in-memory provider enforces no unique index, so without the service-level
+    ///     check this insert would succeed and the duplicate would only fail on SQL Server.
+    /// </remarks>
+    [Fact]
+    public async Task Create_DuplicateEmail_ThrowsConflict()
+    {
+        await SeedHolder("Jane", "Doe", "jane@example.com");
+
+        await Assert.ThrowsAsync<ConflictException>(() =>
+            _policyHoldersService.Create(new CreatePolicyHolderDto
+                { FirstName = "Janet", LastName = "Roe", Email = "jane@example.com" }));
     }
 
     /// <summary>

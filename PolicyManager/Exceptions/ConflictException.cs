@@ -7,10 +7,9 @@ namespace PolicyManager.Exceptions;
 ///     For example a policyholder registering an email address that is already taken. The request was
 ///     well formed and the caller did nothing wrong, so this is a 409 rather than a 400.
 ///     <para>
-///     Not yet thrown by the services. A duplicate email currently surfaces as a
-///     <c>DbUpdateException</c>, which the handler also maps to 409 by reading the unique index, so
-///     the observable behaviour is already correct — this type is the explicit form to migrate to
-///     once the service checks for the conflict itself.
+///     Thrown by the services when they detect the conflict themselves, so the 409 does not
+///     depend on the provider enforcing a unique index. The database constraint stays as the
+///     backstop for races, and the handler maps its violation to the same 409.
 ///     </para>
 /// </remarks>
 public class ConflictException(string message) : Exception(message);

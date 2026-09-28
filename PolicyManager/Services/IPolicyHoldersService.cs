@@ -29,6 +29,7 @@ public interface IPolicyHoldersService
     /// <summary>
     ///     Creates a new policy holder.
     /// </summary>
+    /// <exception cref="Exceptions.ConflictException">A policyholder with the same email already exists.</exception>
     /// <param name="dto">The policy holder data transfer object.</param>
     /// <param name="cancellationToken">Token used to cancel the operation.</param>
     /// <returns>The unique identifier of the newly created policy holder.</returns>

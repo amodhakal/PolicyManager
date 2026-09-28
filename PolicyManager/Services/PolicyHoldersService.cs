@@ -3,6 +3,7 @@ using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Caching.Memory;
 using PolicyManager.Data;
 using PolicyManager.DTOs;
+using PolicyManager.Exceptions;
 using PolicyManager.Models;
 
 namespace PolicyManager.Services;
@@ -142,12 +143,24 @@ public class PolicyHoldersService(AppDbContext context, IMemoryCache cache) : IP
     /// <remarks>
     ///     Only the single-holder key is invalidated. There is no list entry to evict any more, so a
     ///     write from outside this service can no longer be masked by a stale collection.
+    ///     <para>
+    ///     The email is checked first so a duplicate is a 409 naming the address on every
+    ///     provider, including the in-memory one, which enforces no unique index. The unique
+    ///     index stays as the backstop for races between the check and the insert, and the
+    ///     handler maps its violation to the same 409.
+    ///     </para>
     /// </remarks>
     /// <param name="dto">The policyholder data transfer object.</param>
     /// <param name="cancellationToken">Token used to cancel the operation.</param>
     /// <returns>The unique identifier of the newly created policyholder.</returns>
+    /// <exception cref="ConflictException">A policyholder with the same email already exists.</exception>
     public async Task<int> Create(CreatePolicyHolderDto dto, CancellationToken cancellationToken = default)
     {
+        var normalizedEmail = dto.Email.ToLowerInvariant();
+        var emailTaken = await context.PolicyHolders
+            .AnyAsync(h => h.Email.ToLower() == normalizedEmail, cancellationToken);
+        if (emailTaken) throw new ConflictException($"A policyholder with email '{dto.Email}' already exists.");
+
         var holder = new PolicyHolder
             { FirstName = dto.FirstName, LastName = dto.LastName, Email = dto.Email };
 

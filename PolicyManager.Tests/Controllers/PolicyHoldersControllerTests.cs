@@ -108,4 +108,21 @@ public class PolicyHoldersControllerTests : ApiIntegrationTestBase
         var response = await Client.GetAsync("/api/policyholders/99999");
         Assert.Equal(HttpStatusCode.NotFound, response.StatusCode);
     }
+
+    /// <summary>
+    ///     Creating a holder with a taken email returns 409, on every provider.
+    /// </summary>
+    /// <remarks>
+    ///     The in-memory provider enforces no unique index, so this 409 comes from the
+    ///     service-level check; on SQL Server the unique index backstops the race.
+    /// </remarks>
+    [Fact]
+    public async Task Create_DuplicateEmail_Returns409()
+    {
+        var first = await Client.PostAsJsonAsync("/api/policyholders", _createPolicyHolderDto);
+        Assert.Equal(HttpStatusCode.Created, first.StatusCode);
+
+        var duplicate = await Client.PostAsJsonAsync("/api/policyholders", _createPolicyHolderDto);
+        Assert.Equal(HttpStatusCode.Conflict, duplicate.StatusCode);
+    }
 }

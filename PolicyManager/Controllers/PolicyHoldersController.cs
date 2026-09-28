@@ -57,7 +57,8 @@ public class PolicyHoldersController(IPolicyHoldersService policyHoldersService)
     /// <param name="cancellationToken">Token used to cancel the operation.</param>
     /// <returns>A created result whose body is the new policyholder.</returns>
     /// <response code="201">policyholder created successfully.</response>
-    /// <response code="400">Invalid input or duplicate email.</response>
+    /// <response code="400">Invalid input.</response>
+    /// <response code="409">A policyholder with the same email already exists.</response>
     [HttpPost]
     public async Task<ActionResult<PolicyHolderDto>> Create(
         CreatePolicyHolderDto dto, CancellationToken cancellationToken)
