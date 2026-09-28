@@ -398,11 +398,17 @@ PolicyManager/
 │   ├── Services/
 │   └── Infrastructure/
 ├── scripts/
+│   ├── README.md
 │   ├── lib/
 │   │   └── api.ts
+│   ├── k6/
+│   ├── bombardier/
+│   ├── seed/
+│   │   └── seed.ts
 │   ├── addPolicyHolders.ts
 │   ├── addPolicy.ts
-│   └── addClaim.ts
+│   ├── addClaim.ts
+│   └── mint-token.ts
 ├── .github/
 │   └── workflows/
 │       └── ci.yml
@@ -429,6 +435,12 @@ Requests run with bounded concurrency (`LOAD_CONCURRENCY`, default 50) rather th
 each run prints a per-status summary and **exits non-zero if any request failed**. That is the point
 of the change: the original scripts discarded the status code, so a run in which every one of
 10,000 requests was rejected still exited 0.
+
+`scripts/README.md` documents the whole directory, which now also holds a deterministic seed
+(`seed/seed.ts`), k6 smoke and load suites, and bombardier examples. One thing to know before
+pointing any of it at a running API: **rate limiting applies to it too.** The API sheds callers over
+`RateLimiting__PermitLimit` (100/minute by default) with a 429, which every one of these tools
+counts as a failure, so a load run needs the quota raised for its duration.
 
 ---
 
