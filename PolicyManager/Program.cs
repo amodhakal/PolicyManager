@@ -16,7 +16,9 @@ using PolicyManager.Health;
 using PolicyManager.Middleware;
 using PolicyManager.Messaging;
 using PolicyManager.Models;
+using PolicyManager.Resilience;
 using PolicyManager.Services;
+using PolicyManager.Telemetry;
 
 var environmentName = ResolveEnvironmentName(args);
 
@@ -90,14 +92,42 @@ if (builder.Environment.IsDevelopment())
 
 var connectionString = ResolveConnectionString(builder.Configuration, builder.Environment.EnvironmentName);
 
+builder.Services.AddResiliencePipelines(builder.Configuration);
+builder.Services.AddPolicyManagerTelemetry(builder.Configuration, builder.Environment);
+
+// Deliberately no EnableRetryOnFailure here. EF's retrying execution strategy refuses
+// user-initiated transactions, and the outbox write path in Data/OutboxTransaction.cs opens one —
+// turning it on would turn every create and update into
+// "The configured execution strategy does not support user-initiated transactions".
+// Database retry therefore lives where it can be applied safely: the readiness probe, and any
+// future call that is a single statement outside a unit of work. See the README.
 builder.Services.AddDbContext<AppDbContext>(options =>
     options.UseSqlServer(connectionString));
 
 // "ready" marks the check as a readiness dependency rather than a liveness one: the process can be up
 // and still not able to serve a request until the database answers. The timeout bounds how long a
 // hung connection can hold a probe open, so an orchestrator gets a verdict rather than a hang.
+//
+// Registered through a HealthCheckRegistration rather than AddCheck<T> because the wrapper decorates
+// another check, and a container holding two IHealthCheck registrations cannot tell which one the
+// decorator should wrap. Naming the factory makes that explicit at the composition root.
 builder.Services.AddHealthChecks()
-    .AddCheck<SqlServerHealthCheck>("sql-server", tags: new[] { "ready" }, timeout: TimeSpan.FromSeconds(5));
+    .Add(new HealthCheckRegistration(
+        "sql-server",
+        (IServiceProvider sp) => new ResilientSqlServerHealthCheck(
+            ActivatorUtilities.CreateInstance<SqlServerHealthCheck>(sp, []),
+            sp.GetRequiredService<ResiliencePipelineFor<DatabasePipeline>>(),
+            sp.GetRequiredService<ILogger<ResilientSqlServerHealthCheck>>()),
+        failureStatus: HealthStatus.Unhealthy,
+        tags: new[] { "ready" },
+        timeout: TimeSpan.FromSeconds(5)));
+
+// Outbound calls go through this client so the resilience pipeline is attached once, at the
+// composition root, rather than being re-derived at each call site.
+builder.Services.AddTransient<ResilientHttpMessageHandler>();
+builder.Services
+    .AddHttpClient(HttpClients.Outbound, client => client.Timeout = TimeSpan.FromSeconds(30))
+    .AddHttpMessageHandler<ResilientHttpMessageHandler>();
 
 builder.Services.Configure<OutboxOptions>(builder.Configuration.GetSection(OutboxOptions.SectionName));
 

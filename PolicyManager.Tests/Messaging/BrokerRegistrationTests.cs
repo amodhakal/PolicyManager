@@ -4,6 +4,7 @@ using Microsoft.Extensions.DependencyInjection.Extensions;
 using Microsoft.Extensions.Options;
 using PolicyManager.Configuration;
 using PolicyManager.Messaging;
+using PolicyManager.Resilience;
 using PolicyManager.Services;
 
 namespace PolicyManager.Tests.Messaging;
@@ -221,6 +222,10 @@ public class BrokerRegistrationTests
         // Mirrors Program.cs: the stand-in is registered first with TryAdd, so the real publisher
         // only wins because it is registered after it.
         services.TryAddSingleton<IOutboxPublisher, LoggingOutboxPublisher>();
+
+        // The real publisher is constructed inside the resilience pipeline, so a container that
+        // mirrors Program.cs has to have the pipelines in it too.
+        services.AddResiliencePipelines(new ConfigurationBuilder().Build());
 
         services.AddOutboxBroker(new ConfigurationBuilder().AddInMemoryCollection(settings).Build());
 

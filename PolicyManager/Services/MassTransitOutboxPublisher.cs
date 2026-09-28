@@ -4,6 +4,7 @@ using Microsoft.Extensions.Options;
 using PolicyManager.Configuration;
 using PolicyManager.Messaging;
 using PolicyManager.Models;
+using PolicyManager.Resilience;
 
 namespace PolicyManager.Services;
 
@@ -23,9 +24,18 @@ namespace PolicyManager.Services;
 ///     processed and drop it on the floor — the one failure the outbox is supposed to make
 ///     impossible.
 ///     </para>
+///     <para>
+///     The publish runs inside the broker resilience pipeline, which retries a transient failure with
+///     an exponential backoff and opens a circuit while the broker is down. Those two act at different
+///     timescales and compose with the dispatcher's own policy rather than duplicating it: the
+///     pipeline absorbs a blip within one attempt, while the dispatcher schedules across passes and
+///     eventually dead-letters. An open circuit rejects immediately, so a broker that has been down
+///     for a while is not asked again until it has had a chance to recover.
+///     </para>
 /// </remarks>
 public sealed class MassTransitOutboxPublisher(
     IPublishEndpoint publishEndpoint,
+    ResiliencePipelineFor<BrokerPipeline> pipelines,
     IOptions<BrokerOptions> options,
     ILogger<MassTransitOutboxPublisher> logger) : IOutboxPublisher
 {
@@ -48,19 +58,21 @@ public sealed class MassTransitOutboxPublisher(
         using var timeout = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
         timeout.CancelAfter(_options.PublishTimeout);
 
-        await publishEndpoint.Publish(
-            envelope,
-            context =>
-            {
-                // The outbox row is the message's identity. Setting it explicitly means the broker
-                // message identifier matches the outbox row, so a redelivery is recognisable.
-                context.MessageId = envelope.MessageId;
-                context.SourceAddress = new Uri(SourceAddress);
+        await pipelines.Pipeline.ExecuteAsync(
+            async token => await publishEndpoint.Publish(
+                envelope,
+                context =>
+                {
+                    // The outbox row is the message's identity. Setting it explicitly means the broker
+                    // message identifier matches the outbox row, so a redelivery is recognisable.
+                    context.MessageId = envelope.MessageId;
+                    context.SourceAddress = new Uri(SourceAddress);
 
-                // The discriminator travels as a header as well as in the body, because it is what
-                // routing and filtering are expressed in terms of.
-                context.Headers.Set(HeaderNames.Type, envelope.Type);
-            },
+                    // The discriminator travels as a header as well as in the body, because it is what
+                    // routing and filtering are expressed in terms of.
+                    context.Headers.Set(HeaderNames.Type, envelope.Type);
+                },
+                token),
             timeout.Token);
 
         logger.LogInformation(

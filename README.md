@@ -23,6 +23,8 @@ All data is persisted to SQL Server via Entity Framework Core with migration-bas
 | Entity Framework Core   | ORM with code-first migrations |
 | SQL Server (Docker)     | Primary data store |
 | MassTransit / RabbitMQ  | Transactional-outbox transport (opt-in) |
+| OpenTelemetry           | Distributed tracing and metrics |
+| Polly                   | Retry, circuit breakers and timeouts for outbound calls |
 | OpenAPI / Swagger       | API documentation and contract |
 | GitHub Actions          | CI pipeline (build, test on every push to main) |
 | Docker / Docker Compose | Containerized local environment |
@@ -412,6 +414,11 @@ PolicyManager/
 │   ├── Services/
 │   ├── Data/
 │   ├── Health/
+│   ├── Configuration/
+│   ├── Messaging/
+│   ├── Resilience/
+│   ├── Telemetry/
+│   ├── Middleware/
 │   ├── Migrations/
 │   ├── Properties/
 │   ├── Dockerfile
@@ -420,6 +427,10 @@ PolicyManager/
 ├── PolicyManager.Tests/
 │   ├── Controllers/
 │   ├── Services/
+│   ├── Messaging/
+│   ├── Resilience/
+│   ├── Telemetry/
+│   ├── Integration/
 │   └── Infrastructure/
 ├── scripts/
 │   ├── addPolicyHolders.ts
@@ -1147,3 +1158,116 @@ registers the stand-in and no bus, that enabling replaces it, that configuration
 that an invalid configuration is rejected at registration, and — against MassTransit's in-memory
 harness — that the outbox row reaches the publish pipeline with its identifier and header intact
 and that a transport failure propagates rather than being swallowed.
+
+The publish itself runs inside a Polly pipeline, described under
+[Resilience](#resilience-circuit-breakers-and-retry).
+
+---
+
+## Observability
+
+### Telemetry
+
+The API is instrumented with [OpenTelemetry](https://opentelemetry.io): ASP.NET Core for incoming
+requests, Entity Framework Core for database commands, `HttpClient` for outbound calls, the runtime
+for process metrics, and MassTransit's activity source for broker publishes. Traces and metrics are
+collected and tagged with the correlation ID that `CorrelationIdMiddleware` already puts on the
+current activity, so a support conversation that starts with "here is my request ID" ends at a trace
+rather than at a log search.
+
+**Nothing is exported unless you configure a collector.** Collection is on by default; export is not.
+That separation is deliberate — it is what makes turning on OTLP a configuration change rather than a
+code change — and it is also why the default local-dev and CI paths ship no telemetry anywhere,
+without anyone having to remember to switch it off.
+
+| Key | Default | Purpose |
+|---|---|---|
+| `Telemetry:ServiceName` | `policy-manager-api` | The `service.name` resource attribute every span and metric is attributed to. |
+| `Telemetry:ServiceVersion` | `1.0.0` | The `service.version` resource attribute. |
+| `Telemetry:Environment` | host environment | `deployment.environment`. Falls back to `ASPNETCORE_ENVIRONMENT`. |
+| `Telemetry:EnableTracing` | `true` | Collect distributed traces. |
+| `Telemetry:EnableMetrics` | `true` | Collect metrics. |
+| `Telemetry:OtlpEndpoint` | *(unset)* | Collector endpoint, e.g. `http://localhost:4317`. **Unset means nothing is exported.** |
+| `Telemetry:OtlpProtocol` | `grpc` | `grpc` or `http/protobuf`. |
+| `Telemetry:TraceSampleRatio` | `1.0` | Head-sampling ratio. The decision is made at the root of a trace and carried on the trace, so a downstream service does not decide differently and produce a trace with a hole in the middle. |
+
+Override with the `__` environment form, as with every other section:
+
+```bash
+Telemetry__OtlpEndpoint=http://localhost:4317
+Telemetry__ServiceName=policy-manager-api-canary
+Telemetry__TraceSampleRatio=0.1
+```
+
+Pointing at a collector with [docker compose](https://github.com/open-telemetry/opentelemetry-collector) locally
+and then restarting is the whole of the setup. An unrecognised `OtlpProtocol`, a sample ratio outside
+0..1, or an empty `ServiceName` all fail at startup rather than being silently corrected — a sampler
+quietly clamped to a range would quietly change how much telemetry a deployment produces.
+
+EF Core **query parameters are not recorded**. A parameter can carry a policyholder's email, and a
+trace backend is a far wider audience than the database the row lives in. The statement text is
+recorded, which is enough to see which query is slow.
+
+### Resilience: circuit breakers and retry
+
+Every outbound dependency gets a [Polly](https://www.nuget.org/packages/Polly) pipeline built from
+the `Resilience` section: an **exponential-backoff retry**, a **circuit breaker**, and a **timeout**.
+Three dependencies, three independent budgets, because a database and a broker fail for different
+reasons on different timescales and treating them the same would be wrong in both directions.
+
+The strategies are nested breaker → retry → timeout, in that order. The breaker is outermost so a
+dependency that is down is rejected immediately rather than after the caller has sat through the
+backoff chain; the timeout is innermost so a single hung attempt is bounded and a timeout counts as
+a retryable failure rather than stalling the whole chain.
+
+`MaxRetryAttempts: 0` means the retry strategy is **omitted**, not configured with zero attempts —
+Polly treats a retry budget of zero as a misconfiguration, so a dependency that should fail fast has
+no retry in its pipeline at all. Cancellations are never retried: a cancelled token is the host
+shutting down or the caller giving up, and replaying it spends the budget and then throws anyway.
+
+| Key | Default | Purpose |
+|---|---|---|
+| `MaxRetryAttempts` | `2` (`Database`: 3) | Retries after the first attempt. `0` disables the retry strategy. |
+| `Delay` | `200ms` | First backoff. Each retry doubles it. |
+| `MaxDelay` | `2s` (database/broker: `5s`) | Ceiling for the doubling. |
+| `UseJitter` | `true` | Without it every caller that failed at the same instant retries at the same instant, which is how a recovering dependency gets knocked over again. |
+| `BreakDuration` | `10s` (database: `15s`, broker: `30s`) | How long the circuit stays open. |
+| `FailureRatio` | `0.5` | Share of failures over the sampling window at which the circuit opens. |
+| `MinimumThroughput` | `10` (database/broker: `5`) | Calls required in the window before the ratio counts at all. A floor of 1 would open the circuit on a single unlucky request. |
+| `Timeout` | `10s` (database: `5s`, broker: `30s`) | Deadline for a single attempt. |
+
+A budget that would silently disable the protection it describes — a zero timeout, a `MaxDelay` below
+its own `Delay`, a `MinimumThroughput` below 2, a `FailureRatio` outside 0..1 — is rejected at
+startup naming the offending key.
+
+#### Where the pipelines are applied
+
+- **Broker.** The outbox publish runs inside the broker pipeline. It absorbs a blip within one
+  attempt while the dispatcher's own policy handles the long game across passes, eventually
+  dead-lettering; an open circuit rejects immediately, so a broker that has been down for a while is
+  not asked again until it has had a chance to recover. The two compose rather than duplicate.
+- **Database.** The SQL Server readiness probe. It is the one database call made on a timer, and the
+  one most likely to be repeated while the database is down — an orchestrator polls readiness every
+  few seconds precisely when things are worst. Without a breaker, each poll pays the full timeout,
+  and with a retry budget underneath it pays that several times over, so the check meant to detect an
+  outage becomes a contributor to it.
+- **HTTP.** The `outbound` named client, via `ResilientHttpMessageHandler` in its handler stack. A
+  handler rather than a call at each site, so a new outbound call is protected the moment it is
+  written — a policy applied by hand is a policy the next contributor forgets.
+
+#### Why `EnableRetryOnFailure` is deliberately off
+
+EF Core's retrying execution strategy refuses user-initiated transactions, and the outbox write path
+in `Data/OutboxTransaction.cs` opens one. Turning it on would turn every create and update into
+`The configured execution strategy does not support user-initiated transactions`. Making it work
+would mean re-entrancy work in `OutboxTransaction` — a replayed `SaveChangesAsync` on a
+change tracker that has already marked the entity `Unchanged` would insert nothing and write an
+outbox message with `Id = 0` — which is a change to the outbox's correctness story, not a resilience
+setting. Database retry therefore stays where it can be applied safely. Do not add
+`EnableRetryOnFailure` without that work.
+
+`PolicyManager.Tests/Resilience/` and `PolicyManager.Tests/Telemetry/` cover the behaviour from the
+outside: that a transient failure is retried and eventually succeeds, that the backoff grows, that
+the cap holds, that a cancellation is not replayed, that the circuit opens and stops calling through,
+that a single failure does not open it, that the readiness probe is short-circuited by it, and that
+nothing is exported without a collector endpoint.

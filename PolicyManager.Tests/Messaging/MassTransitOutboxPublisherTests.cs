@@ -8,6 +8,7 @@ using Moq;
 using PolicyManager.Configuration;
 using PolicyManager.Messaging;
 using PolicyManager.Models;
+using PolicyManager.Resilience;
 using PolicyManager.Services;
 
 namespace PolicyManager.Tests.Messaging;
@@ -143,15 +144,43 @@ public class MassTransitOutboxPublisherTests
     {
         return new MassTransitOutboxPublisher(
             endpoint,
-            Options.Create(new BrokerOptions
-            {
-                Enabled = true,
-                Host = "localhost",
-                QueueName = "policy-manager.outbox",
-                PublishTimeout = TimeSpan.FromSeconds(30)
-            }),
+            Pipelines(),
+            Options.Create(BrokerBudget()),
             NullLogger<MassTransitOutboxPublisher>.Instance);
     }
+
+    /// <summary>
+    ///     A broker budget with no retries and a generous timeout, so a test asserting on the
+    ///     publisher's own behaviour is not also waiting out a backoff.
+    /// </summary>
+    private static BrokerOptions BrokerBudget() => new()
+    {
+        Enabled = true,
+        Host = "localhost",
+        QueueName = "policy-manager.outbox",
+        PublishTimeout = TimeSpan.FromSeconds(30)
+    };
+
+    /// <summary>
+    ///     The pipeline with no retries and no breaker, so a test asserting on the publisher's own
+    ///     behaviour is not also waiting out a backoff or tripping a circuit.
+    /// </summary>
+    private static ResiliencePipelineFor<BrokerPipeline> Pipelines()
+        => new(ResilienceRegistration.Build(new DependencyResilienceOptions
+        {
+            MaxRetryAttempts = 0,
+            UseJitter = false,
+            MinimumThroughput = 100,
+            Timeout = TimeSpan.FromSeconds(30)
+        }));
+
+    private static DependencyResilienceOptions NoRetryBroker() => new()
+    {
+        MaxRetryAttempts = 0,
+        UseJitter = false,
+        MinimumThroughput = 100,
+        Timeout = TimeSpan.FromSeconds(30)
+    };
 
     /// <summary>
     ///     A started in-memory bus with the real publisher registered against it, so the assertions
@@ -194,13 +223,8 @@ public class MassTransitOutboxPublisherTests
                 bus,
                 new MassTransitOutboxPublisher(
                     scope.ServiceProvider.GetRequiredService<IPublishEndpoint>(),
-                    Options.Create(new BrokerOptions
-                    {
-                        Enabled = true,
-                        Host = "localhost",
-                        QueueName = "policy-manager.outbox",
-                        PublishTimeout = TimeSpan.FromSeconds(30)
-                    }),
+                    Pipelines(),
+                    Options.Create(BrokerBudget()),
                     NullLogger<MassTransitOutboxPublisher>.Instance));
         }
 
