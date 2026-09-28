@@ -19,7 +19,7 @@ public static class SqlErrorTranslator
     ///     single or double quotes depending on the kind of violation.
     /// </summary>
     private static readonly Regex ConstraintNamePattern =
-        new("constraint\s+['\"](?<name>[^'\"]+)['\"]", RegexOptions.IgnoreCase | RegexOptions.Compiled);
+        new(@"constraint\s+['""](?<name>[^'""]+)['""]", RegexOptions.IgnoreCase | RegexOptions.Compiled);
 
     /// <summary>
     ///     A unique index or unique constraint was violated.
