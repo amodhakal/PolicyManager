@@ -83,36 +83,60 @@ public static class ResilienceRegistration
         ArgumentNullException.ThrowIfNull(options);
 
         var builder = new ResiliencePipelineBuilder()
-            .AddCircuitBreaker(new CircuitBreakerStrategyOptions
-            {
-                FailureRatio = options.FailureRatio,
-                SamplingDuration = options.BreakDuration,
-                MinimumThroughput = options.MinimumThroughput,
-                BreakDuration = options.BreakDuration,
-                ShouldHandle = new PredicateBuilder()
-                    .Handle<Exception>(ex => ex is not OperationCanceledException)
-            });
+            .AddCircuitBreaker(BuildCircuitBreaker(options));
 
         // Zero retries means the strategy is omitted, not configured with zero attempts. Polly treats a
         // retry budget of zero as a misconfiguration rather than as "do not retry", so a dependency
         // that should fail fast has to have no retry in the pipeline at all.
-        if (options.MaxRetryAttempts > 0)
-        {
-            builder.AddRetry(new RetryStrategyOptions
-            {
-                MaxRetryAttempts = options.MaxRetryAttempts,
-                BackoffType = DelayBackoffType.Exponential,
-                Delay = options.Delay,
-                MaxDelay = options.MaxDelay,
-                UseJitter = options.UseJitter,
-                ShouldHandle = new PredicateBuilder()
-                    .Handle<Exception>(ex => ex is not OperationCanceledException)
-            });
-        }
+        if (options.MaxRetryAttempts > 0) builder.AddRetry(BuildRetry(options));
 
         return builder
             .AddTimeout(options.Timeout)
             .Build();
+    }
+
+    /// <summary>
+    ///     The retry strategy for one dependency.
+    /// </summary>
+    /// <remarks>
+    ///     Exposed separately from <see cref="Build" /> so the shape of the policy — exponential rather
+    ///     than constant, capped, jittered — is inspectable without having to infer it from elapsed
+    ///     time, which is a measurement the test suite would only get right on an idle machine.
+    /// </remarks>
+    /// <param name="options">The budget for this dependency.</param>
+    public static RetryStrategyOptions BuildRetry(DependencyResilienceOptions options)
+    {
+        ArgumentNullException.ThrowIfNull(options);
+
+        return new RetryStrategyOptions
+        {
+            MaxRetryAttempts = options.MaxRetryAttempts,
+            BackoffType = DelayBackoffType.Exponential,
+            Delay = options.Delay,
+            MaxDelay = options.MaxDelay,
+            UseJitter = options.UseJitter,
+            ShouldHandle = new PredicateBuilder()
+                .Handle<Exception>(ex => ex is not OperationCanceledException)
+        };
+    }
+
+    /// <summary>
+    ///     The circuit breaker for one dependency.
+    /// </summary>
+    /// <param name="options">The budget for this dependency.</param>
+    public static CircuitBreakerStrategyOptions BuildCircuitBreaker(DependencyResilienceOptions options)
+    {
+        ArgumentNullException.ThrowIfNull(options);
+
+        return new CircuitBreakerStrategyOptions
+        {
+            FailureRatio = options.FailureRatio,
+            SamplingDuration = options.BreakDuration,
+            MinimumThroughput = options.MinimumThroughput,
+            BreakDuration = options.BreakDuration,
+            ShouldHandle = new PredicateBuilder()
+                .Handle<Exception>(ex => ex is not OperationCanceledException)
+        };
     }
 
     /// <summary>

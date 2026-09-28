@@ -1267,7 +1267,11 @@ setting. Database retry therefore stays where it can be applied safely. Do not a
 `EnableRetryOnFailure` without that work.
 
 `PolicyManager.Tests/Resilience/` and `PolicyManager.Tests/Telemetry/` cover the behaviour from the
-outside: that a transient failure is retried and eventually succeeds, that the backoff grows, that
-the cap holds, that a cancellation is not replayed, that the circuit opens and stops calling through,
-that a single failure does not open it, that the readiness probe is short-circuited by it, and that
-nothing is exported without a collector endpoint.
+outside: that a transient failure is retried and eventually succeeds, that the retry budget is
+exponential, capped and jittered, that retries actually wait, that a cancellation is not replayed,
+that the circuit opens and stops calling through, that a single failure does not open it, that the
+readiness probe is short-circuited by it, and that nothing is exported without a collector endpoint.
+
+The retry and breaker *shapes* are asserted against `ResilienceRegistration.BuildRetry` and
+`BuildCircuitBreaker` rather than inferred from elapsed time. A "the second wait was longer than the
+first" assertion measures the machine as much as the policy, and fails on a busy one.

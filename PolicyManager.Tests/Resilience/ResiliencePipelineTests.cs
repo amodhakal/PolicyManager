@@ -6,6 +6,7 @@ using Microsoft.Extensions.Logging.Abstractions;
 using Microsoft.Extensions.Options;
 using Polly;
 using Polly.CircuitBreaker;
+using Polly.Retry;
 using PolicyManager.Configuration;
 using PolicyManager.Health;
 using PolicyManager.Resilience;
@@ -69,32 +70,79 @@ public class ResiliencePipelineTests
     }
 
     /// <summary>
-    ///     The backoff doubles between attempts rather than being constant. A constant backoff turns a
-    ///     dependency that is struggling into a busy loop.
+    ///     The backoff is exponential rather than constant. Asserted on the strategy rather than on
+    ///     elapsed time: a wall-clock assertion of "the second wait was longer than the first" is a
+    ///     measurement of the machine as much as of the policy, and fails on a busy one.
     /// </summary>
     [Fact]
-    public async Task The_backoff_grows_between_attempts()
+    public void The_backoff_is_exponential_capped_and_jittered()
     {
-        var gaps = new List<TimeSpan>();
-        long previous = 0;
-        var attempt = 0;
-        var pipeline = Pipeline(Retries: 3, baseDelay: TimeSpan.FromMilliseconds(40));
+        var budget = new DependencyResilienceOptions
+        {
+            MaxRetryAttempts = 4,
+            Delay = TimeSpan.FromMilliseconds(100),
+            MaxDelay = TimeSpan.FromSeconds(2),
+            UseJitter = true
+        };
 
-        await Assert.ThrowsAsync<InvalidOperationException>(async () =>
+        var retry = ResilienceRegistration.BuildRetry(budget);
+
+        Assert.Equal(DelayBackoffType.Exponential, retry.BackoffType);
+        Assert.Equal(4, retry.MaxRetryAttempts);
+        Assert.Equal(TimeSpan.FromMilliseconds(100), retry.Delay);
+        Assert.Equal(TimeSpan.FromSeconds(2), retry.MaxDelay);
+        Assert.True(retry.UseJitter);
+    }
+
+    /// <summary>
+    ///     The circuit breaker's threshold comes from the same budget, so a deployment can widen the
+    ///     floor at which it trips rather than only changing how long it stays open.
+    /// </summary>
+    [Fact]
+    public void The_circuit_breaker_is_configured_from_the_budget()
+    {
+        var budget = new DependencyResilienceOptions
+        {
+            FailureRatio = 0.75,
+            MinimumThroughput = 12,
+            BreakDuration = TimeSpan.FromSeconds(45)
+        };
+
+        var breaker = ResilienceRegistration.BuildCircuitBreaker(budget);
+
+        Assert.Equal(0.75, breaker.FailureRatio);
+        Assert.Equal(12, breaker.MinimumThroughput);
+        Assert.Equal(TimeSpan.FromSeconds(45), breaker.BreakDuration);
+        Assert.Equal(TimeSpan.FromSeconds(45), breaker.SamplingDuration);
+    }
+
+    /// <summary>
+    ///     A pipeline actually waits between attempts. The floor is the sum of the configured delays —
+    ///     200 + 400 + 800 for three retries of an exponential backoff with no jitter — and scheduling
+    ///     can only make it longer, so this holds however busy the machine is. It is what would fail if
+    ///     the retry were dropped while the attempt count still looked right.
+    /// </summary>
+    [Fact]
+    public async Task Retries_actually_wait_between_attempts()
+    {
+        var attempt = 0;
+        var pipeline = Pipeline(
+            Retries: 3,
+            baseDelay: TimeSpan.FromMilliseconds(200),
+            maxDelay: TimeSpan.FromSeconds(5));
+
+        var elapsed = await Time(() => Assert.ThrowsAsync<InvalidOperationException>(async () =>
             await pipeline.ExecuteAsync<int>(async _ =>
             {
-                var now = Stopwatch.GetTimestamp();
-                if (attempt > 0) gaps.Add(Stopwatch.GetElapsedTime(previous, now));
-                previous = now;
                 attempt++;
                 await Task.Yield();
                 throw new InvalidOperationException("down");
-            }));
+            })));
 
-        // Three retries means four attempts, so three waits between them.
-        Assert.Equal(3, gaps.Count);
-        Assert.True(gaps[1] > gaps[0],
-            $"The second wait ({gaps[1].TotalMilliseconds}ms) should exceed the first ({gaps[0].TotalMilliseconds}ms).");
+        Assert.Equal(4, attempt);
+        Assert.True(
+            elapsed >= TimeSpan.FromMilliseconds(1300),
+            $"Four attempts took {elapsed.TotalMilliseconds}ms, less than the configured backoff requires.");
     }
 
     /// <summary>
@@ -116,9 +164,11 @@ public class ResiliencePipelineTests
 
         Assert.Equal(6, attempts);
 
-        // 20 + 40 + 40 + 40 + 40 with no jitter. Generous upper bound: enough to catch a cap that was
-        // not applied, tight enough not to fail on a slow machine.
-        Assert.True(elapsed < TimeSpan.FromSeconds(5), $"The capped backoff still took {elapsed}.");
+        // 20 + 40 + 40 + 40 + 40 with no jitter, and then a generous ceiling so a loaded machine does
+        // not fail the test. The lower bound is the part that catches a cap that was never applied:
+        // unbounded doubling would have waited far longer than this.
+        Assert.True(elapsed >= TimeSpan.FromMilliseconds(150), $"The pipeline barely waited: {elapsed}.");
+        Assert.True(elapsed < TimeSpan.FromSeconds(10), $"The capped backoff still took {elapsed}.");
     }
 
     /// <summary>
