@@ -1,5 +1,6 @@
 using Microsoft.EntityFrameworkCore;
 using PolicyManager.DTOs;
+using PolicyManager.Exceptions;
 using PolicyManager.Models.Enums;
 using PolicyManager.Services;
 using PolicyManager.Tests.Infrastructure;
@@ -61,13 +62,45 @@ public class PoliciesServiceTests : ServiceTestBase
     }
 
     /// <summary>
-    ///     Verifies that cancelling a non-existent policy does not throw.
+    ///     Verifies that cancelling a non-existent policy raises NotFoundException.
+    /// </summary>
+    /// <remarks>
+    ///     This asserted the opposite: that the call completed silently. A silent completion is
+    ///     indistinguishable at the call site from a successful write, which is how a missing policy
+    ///     came to be reported to API callers as a 200.
+    /// </remarks>
+    [Fact]
+    public async Task Cancel_NonExistentId_ThrowsNotFound()
+    {
+        await Assert.ThrowsAsync<NotFoundException>(() => _policiesService.Cancel(99999));
+    }
+
+    /// <summary>
+    ///     Verifies that updating a non-existent policy raises NotFoundException.
     /// </summary>
     [Fact]
-    public async Task Cancel_NonExistentId_DoesNotThrow()
+    public async Task Update_NonExistentId_ThrowsNotFound()
     {
-        var ex = await Record.ExceptionAsync(() => _policiesService.Cancel(99999));
-        Assert.Null(ex);
+        await Assert.ThrowsAsync<NotFoundException>(() =>
+            _policiesService.Update(99999, new UpdatePolicyDto { Premium = 100m }));
+    }
+
+    /// <summary>
+    ///     Verifies that creating a policy for a holder that does not exist raises NotFoundException.
+    /// </summary>
+    /// <remarks>
+    ///     Without the check the insert reached the foreign key, which the in-memory provider does
+    ///     not enforce and SQL Server reports as a constraint violation - so an unknown holder was a
+    ///     500 on one provider and a 409 on the other, for the same request.
+    /// </remarks>
+    [Fact]
+    public async Task Create_NonExistentHolder_ThrowsNotFound()
+    {
+        var dto = new CreatePolicyDto { Type = Models.Enums.PolicyType.Auto, PolicyHolderId = 99999, Premium = 500m, StartDate = new DateTime(2026, 1, 1), EndDate = new DateTime(2027, 1, 1) };
+
+        await Assert.ThrowsAsync<NotFoundException>(() => _policiesService.Create(dto));
+
+        Assert.Empty(await Context.Policies.ToListAsync());
     }
 
     /// <summary>
