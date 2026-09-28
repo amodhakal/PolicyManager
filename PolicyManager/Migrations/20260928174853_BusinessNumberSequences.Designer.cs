@@ -3,6 +3,7 @@ using System;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Infrastructure;
 using Microsoft.EntityFrameworkCore.Metadata;
+using Microsoft.EntityFrameworkCore.Migrations;
 using Microsoft.EntityFrameworkCore.Storage.ValueConversion;
 using PolicyManager.Data;
 
@@ -11,9 +12,11 @@ using PolicyManager.Data;
 namespace PolicyManager.Migrations
 {
     [DbContext(typeof(AppDbContext))]
-    partial class AppDbContextModelSnapshot : ModelSnapshot
+    [Migration("20260928174853_BusinessNumberSequences")]
+    partial class BusinessNumberSequences
     {
-        protected override void BuildModel(ModelBuilder modelBuilder)
+        /// <inheritdoc />
+        protected override void BuildTargetModel(ModelBuilder modelBuilder)
         {
 #pragma warning disable 612, 618
             modelBuilder
@@ -297,7 +300,7 @@ namespace PolicyManager.Migrations
                     b.HasOne("PolicyManager.Models.Policy", "Policy")
                         .WithMany("Claims")
                         .HasForeignKey("PolicyId")
-                        .OnDelete(DeleteBehavior.Restrict)
+                        .OnDelete(DeleteBehavior.Cascade)
                         .IsRequired();
 
                     b.Navigation("Policy");
@@ -308,7 +311,7 @@ namespace PolicyManager.Migrations
                     b.HasOne("PolicyManager.Models.PolicyHolder", "PolicyHolder")
                         .WithMany("Policies")
                         .HasForeignKey("PolicyHolderId")
-                        .OnDelete(DeleteBehavior.Restrict)
+                        .OnDelete(DeleteBehavior.Cascade)
                         .IsRequired();
 
                     b.Navigation("PolicyHolder");

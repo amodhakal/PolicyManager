@@ -453,6 +453,44 @@ it, so they stayed invisible to every list reader until the entry expired.
 
 ---
 
+## Business Numbers
+
+Policy and claim numbers are sequential and human-readable rather than GUIDs:
+
+```
+POL-2026-000001
+CLM-2026-000042
+```
+
+Nobody can quote a GUID down a telephone, spot a transposition in it, or tell from it which of two
+policies was issued first. The year makes an issue traceable to a period without a lookup, and
+numbering restarts each year so the number stays short enough to read out and write on a form.
+
+### How they are allocated
+
+`BusinessNumberSequence` is a counter row per (kind, year). Allocation is a compare-and-swap on the
+counter's `RowVersion`: read the row, add one, write it with the version that was read. If another
+instance got there first the write matches no rows, raises `DbUpdateConcurrencyException`, and the
+number is retried — contention, not failure, so it is retried rather than surfaced.
+
+Deriving "the highest number issued so far" from the policy rows themselves would need a read
+followed by a write, and two concurrent creates would both read the same maximum and produce the same
+number. The unique index on `PolicyNumber`/`ClaimNumber` would then turn a race into a spurious
+**409**, which is a far worse outcome than the number having a gap in it.
+
+Numbers therefore contain gaps whenever a reservation is not followed by a successful create. That
+is the deliberate trade: a number only has to be unique and increasing within its year, never dense.
+
+The reservation is *not* rolled back with a failed create, and is not part of the outbox transaction
+— it is taken in the request's own unit of work, before the entity insert. It is committed first so
+the number lands in the same write as the row it identifies.
+
+### Migration
+
+`BusinessNumberSequences` creates the counter table. Existing rows keep the GUID numbers they already
+have: the new format applies to policies and claims created from the migration onwards. Rewriting
+existing numbers would break references held by customers and printed on paper, so it is not done.
+
 ## Auditing and Optimistic Concurrency
 
 Every `PolicyHolder`, `Policy` and `Claim` row carries `CreatedAt`, `CreatedBy`, `UpdatedAt`,

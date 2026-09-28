@@ -74,6 +74,11 @@ public class AppDbContext : DbContext
     /// </summary>
     public DbSet<OutboxMessage> OutboxMessages { get; set; }
 
+    /// <summary>
+    ///     Gets or sets the counters behind the human-readable business numbers.
+    /// </summary>
+    public DbSet<BusinessNumberSequence> BusinessNumberSequences { get; set; }
+
     /// <inheritdoc />
     public override int SaveChanges(bool acceptAllChangesOnSuccess)
     {
@@ -174,6 +179,12 @@ modelBuilder.Entity<Policy>()
         ConfigureConcurrencyToken<Policy>(modelBuilder);
         ConfigureConcurrencyToken<Claim>(modelBuilder);
         ConfigureConcurrencyToken<PolicyHolder>(modelBuilder);
+        ConfigureConcurrencyToken<BusinessNumberSequence>(modelBuilder);
+
+        // Composite rather than a surrogate key: the pair is what uniquely identifies a counter, and
+        // it is the pair the allocation read filters on.
+        modelBuilder.Entity<BusinessNumberSequence>()
+            .HasKey(s => new { s.Kind, s.Year });
 
         modelBuilder.Entity<Policy>()
             .HasOne(p => p.PolicyHolder)

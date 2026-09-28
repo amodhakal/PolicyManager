@@ -16,7 +16,7 @@ public class PoliciesServiceTests : ServiceTestBase
 
     public PoliciesServiceTests()
     {
-        _policiesService = new PoliciesService(Context);
+        _policiesService = new PoliciesService(Context, Numbers);
     }
 
     /// <summary>

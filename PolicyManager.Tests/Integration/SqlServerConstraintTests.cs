@@ -1,6 +1,8 @@
 using System.Text.Json;
 using Microsoft.Data.SqlClient;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.Extensions.Logging.Abstractions;
+using PolicyManager.Services;
 using PolicyManager.Data;
 using PolicyManager.DTOs;
 using PolicyManager.Models;
@@ -69,7 +71,7 @@ public class SqlServerConstraintTests : SqlServerTestBase
         context.Policies.Add(new Policy
         {
             PolicyHolderId = 987_654, Premium = 100m, Status = Models.Enums.PolicyStatus.Active,
-            Type = Models.Enums.PolicyType.Auto,
+            Type = Models.Enums.PolicyType.Auto, PolicyNumber = "POL-2026-000901",
             StartDate = new DateTime(2026, 1, 1), EndDate = new DateTime(2027, 1, 1)
         });
 
@@ -207,7 +209,7 @@ public class SqlServerConstraintTests : SqlServerTestBase
     {
         await using var context = CreateContext();
 
-        context.Claims.Add(new Claim { PolicyId = 987_654, Amount = 50m });
+        context.Claims.Add(new Claim { PolicyId = 987_654, Amount = 50m, ClaimNumber = "CLM-2026-000901" });
 
         await Assert.ThrowsAsync<DbUpdateException>(() => context.SaveChangesAsync());
     }
@@ -252,14 +254,17 @@ public class SqlServerConstraintTests : SqlServerTestBase
         context.Policies.Add(new Policy
         {
             PolicyHolderId = holder.Id, Premium = 100m, Status = Models.Enums.PolicyStatus.Active,
-            Type = Models.Enums.PolicyType.Auto,
+            Type = Models.Enums.PolicyType.Auto, PolicyNumber = "POL-2026-000902",
             StartDate = new DateTime(2026, 1, 1), EndDate = new DateTime(2027, 1, 1)
         });
         await context.SaveChangesAsync();
 
         var policyId = await context.Policies.Select(p => p.Id).SingleAsync();
 
-        context.Claims.Add(new Claim { PolicyId = policyId, Amount = 100_000_000m });
+        context.Claims.Add(new Claim
+        {
+            PolicyId = policyId, Amount = 100_000_000m, ClaimNumber = "CLM-2026-000902"
+        });
 
         // Overflows the column. The in-memory provider has no such limit and would store it happily.
         await Assert.ThrowsAsync<DbUpdateException>(() => context.SaveChangesAsync());
@@ -295,7 +300,8 @@ public class SqlServerConstraintTests : SqlServerTestBase
         context.PolicyHolders.Add(holder);
         await context.SaveChangesAsync();
 
-        var service = new PoliciesService(context);
+        var service = new PoliciesService(context, new BusinessNumberGenerator(
+            context, TimeProvider.System, NullLogger<BusinessNumberGenerator>.Instance));
         var policyId = await service.Create(new CreatePolicyDto
         {
             PolicyHolderId = holder.Id, Premium = 500m, Type = Models.Enums.PolicyType.Auto,
@@ -322,7 +328,8 @@ public class SqlServerConstraintTests : SqlServerTestBase
     {
         await using var context = CreateContext();
 
-        var service = new PoliciesService(context);
+        var service = new PoliciesService(context, new BusinessNumberGenerator(
+            context, TimeProvider.System, NullLogger<BusinessNumberGenerator>.Instance));
 
         // PolicyHolderId points at nothing, so the foreign key rejects the insert.
         await Assert.ThrowsAnyAsync<Exception>(() => service.Create(new CreatePolicyDto
