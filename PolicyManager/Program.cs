@@ -14,6 +14,7 @@ using PolicyManager.Data;
 using PolicyManager.Errors;
 using PolicyManager.Health;
 using PolicyManager.Middleware;
+using PolicyManager.Messaging;
 using PolicyManager.Models;
 using PolicyManager.Services;
 
@@ -141,7 +142,12 @@ builder.Services.AddScoped<ICurrentUser, HttpContextCurrentUser>();
 builder.Services.AddScoped<IPiiGuard, PiiGuard>();
 
 builder.Services.TryAddSingleton(TimeProvider.System);
+
+// TryAdd first so the logging stand-in is what is registered when no broker is configured, and so a
+// test host that substitutes its own publisher keeps it. The real transport is registered after, and
+// only when Broker:Enabled says so — see BrokerRegistration.
 builder.Services.TryAddSingleton<IOutboxPublisher, LoggingOutboxPublisher>();
+builder.Services.AddOutboxBroker(builder.Configuration);
 builder.Services.AddScoped<OutboxDispatcher>();
 builder.Services.AddHostedService<OutboxProcessorBackgroundService>();
 

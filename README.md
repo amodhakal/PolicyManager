@@ -22,6 +22,7 @@ All data is persisted to SQL Server via Entity Framework Core with migration-bas
 | ASP.NET Core            | Web API framework |
 | Entity Framework Core   | ORM with code-first migrations |
 | SQL Server (Docker)     | Primary data store |
+| MassTransit / RabbitMQ  | Transactional-outbox transport (opt-in) |
 | OpenAPI / Swagger       | API documentation and contract |
 | GitHub Actions          | CI pipeline (build, test on every push to main) |
 | Docker / Docker Compose | Containerized local environment |
@@ -75,6 +76,24 @@ are then read from the process environment.
 | `DB_NAME` | `PolicyManager` | Yes | Database name for the connection string's `Database`. Must already exist for `dotnet ef database update` to target it. |
 | `DB_USER` | `SA` | Yes | SQL Server login for the connection string's `User Id`. Must match the account `DB_PASSWORD` belongs to (the Compose service creates `sa`). |
 
+### Broker variables
+
+Set `BROKER_ENABLED=true` in `.env` to have the API publish the transactional outbox to
+RabbitMQ instead of the in-process logging stand-in. Leave it `false` — the default — and no
+broker is needed for `dotnet test` or for local development. See
+[Publishing to a real broker](#publishing-to-a-real-broker) for the full set of `Broker__*`
+configuration keys and what each one is for.
+
+| Variable | Default (in `.env.example`) | Required | Purpose |
+|---|---|---|---|
+| `BROKER_ENABLED` | `false` | No | Publishes the outbox to the broker when `true`. Consumed by `compose.yaml` as `Broker__Enabled`. |
+| `BROKER_HOST` | `localhost` | No | Broker hostname. Use `rabbitmq` when the API runs inside the Compose network. |
+| `BROKER_PORT` | `5672` | No | AMQP port. |
+| `BROKER_USERNAME` | `guest` | No | Broker username. Also sets `RABBITMQ_DEFAULT_USER` on the Compose broker. |
+| `BROKER_PASSWORD` | `guest` | No | Broker password. Also sets `RABBITMQ_DEFAULT_PASS`. Change it for anything but a local container. |
+| `BROKER_VHOST` | `/` | No | Virtual host. Also sets `RABBITMQ_DEFAULT_VHOST`. |
+| `BROKER_QUEUE_NAME` | `policy-manager.outbox` | No | The durable queue outbox messages are published to. |
+
 The connection string lives in configuration under the standard `ConnectionStrings:DefaultConnection`
 key. `appsettings.json` holds the template and `appsettings.Development.json` overrides it;
 `Program.cs` resolves it with `GetConnectionString("DefaultConnection")` and expands `${NAME}`
@@ -110,6 +129,11 @@ docker compose up -d
   start the app in a broken state.
 - The `api` service is started with `ASPNETCORE_ENVIRONMENT=Development` so it can reach the
   self-signed local SQL Server certificate, and so Swagger is served in the container.
+
+`compose.yaml` also starts a `rabbitmq` service and wires the `Broker__*` variables into the
+`api` service, but the outbox transport is off unless `BROKER_ENABLED=true` is set in `.env` — the
+API does not wait on RabbitMQ and does not contact it. The management UI is at
+<http://localhost:15672> (`guest` / `guest` by default).
 
 `DB_PASSWORD` must satisfy the SQL Server image's password policy: **at least 8 characters
 and at least three of** uppercase, lowercase, digits, and symbols. The `xxxxxxx` placeholder
@@ -1052,6 +1076,74 @@ Everything above is configured under the `Outbox` section of `appsettings.json`:
 `MaxRetryDelay`, `MaxAttempts`.
 
 `IOutboxPublisher` is the transport seam. The registered `LoggingOutboxPublisher` records each
-message and returns success — there is no broker on the other end yet, so **messages are drained
-and discarded**. Replacing it with a real transport means registering a different
-`IOutboxPublisher`; the claiming, retry and dead-lettering policy is unaffected.
+message and returns success — with no broker configured the outbox still drains correctly, but
+**the messages are discarded**. See [Publishing to a real broker](#publishing-to-a-real-broker)
+below for what replaces it.
+
+### Publishing to a real broker
+
+The transport is [MassTransit](https://masstransit.io) over AMQP, and it is **opt-in**. With
+`Broker:Enabled` false — the default — nothing in the composition root starts a bus, no broker is
+contacted, and the logging stand-in stays registered. That is a deliberate constraint, not a
+convenience: making the transport mandatory would mean `dotnet test` needed a running broker, and
+CI would grow a service dependency for a path none of the tests are about.
+
+The claiming, retry and dead-lettering policy in `OutboxDispatcher` is **unchanged**. The
+dispatcher only ever sees the `IOutboxPublisher` contract — publish, or throw — so swapping the
+implementation is the whole of the change. A transport failure still surfaces as an exception and
+the existing policy decides between a scheduled retry and a dead letter.
+
+Enabling it publishes an `OutboxEnvelope` — a wire contract carrying the outbox row's identifier,
+its `Type` discriminator, its JSON `Content` payload, when it was created and how many attempts had
+already failed. The row identifier is reused as the broker message identifier, so a redelivery is
+recognisable as the same message rather than a new one, and the discriminator travels as a header
+so a consumer can filter on it without deserialising the payload. The queue named by
+`Broker:QueueName` is declared and bound to the publish exchange at bus start, because nothing in
+this application consumes these messages and an unbound queue would mean they reached an exchange
+and were thrown away.
+
+| Key | Default | Purpose |
+|---|---|---|
+| `Broker:Enabled` | `false` | Registers the MassTransit publisher and starts a RabbitMQ bus. `false` keeps the logging stand-in. |
+| `Broker:Host` | `localhost` | Broker hostname. `rabbitmq` when the API runs inside the Compose network. |
+| `Broker:Port` | `5672` | AMQP port. `5671` for AMQP over TLS. |
+| `Broker:VirtualHost` | `/` | Virtual host the bus connects to. |
+| `Broker:Username` | `guest` | Broker username. |
+| `Broker:Password` | `guest` | Broker password. Supply this from a secret store or `Broker__Password` rather than committing it. |
+| `Broker:UseSsl` | `false` | Negotiate TLS with the broker. |
+| `Broker:QueueName` | `policy-manager.outbox` | The durable queue outbox messages are published to. |
+| `Broker:Durable` | `true` | Survive a broker restart. `false` would lose exactly the messages the outbox exists to guarantee. |
+| `Broker:RequestedHeartbeat` | `00:00:30` | AMQP heartbeat, so a silently dropped connection is detected rather than waited out. |
+| `Broker:RequestedConnectionTimeout` | `00:00:10` | How long to wait for the initial connection before giving up. Also bounds the broker health check. |
+| `Broker:PublishTimeout` | `00:00:30` | Deadline for a single publish, so it cannot outlive the outbox claim lease and be picked up by a second processor. |
+
+Override any of them with the `__` environment form, as `compose.yaml` does:
+
+```bash
+Broker__Enabled=true
+Broker__Host=localhost
+Broker__Port=5672
+Broker__Username=guest
+Broker__Password=guest
+Broker__QueueName=policy-manager.outbox
+```
+
+A broker that is enabled but not usable — no host, no queue, a port outside 1–65535, a zero publish
+timeout — **fails at startup** with a message naming the offending key, rather than coming up
+healthy and silently discarding events.
+
+With the broker enabled, a `message-broker` health check is registered and tagged `ready`, so
+`/health/ready` reports the broker's state while `/health` still reports only that the process is
+up. It counts a `Degraded` bus as a failure, so a broker that is still starting takes the instance
+out of rotation instead of admitting requests that would only fail.
+
+`compose.yaml` includes a `rabbitmq` service (`rabbitmq:3.13-management-alpine`, AMQP on `5672`
+and the management UI on <http://localhost:15672>). It is started by `docker compose up -d` but the
+API does not depend on it: the `Broker__*` variables default to `Broker__Enabled=false`, so the
+local path is unchanged. To publish from the containerised API, set `BROKER_ENABLED=true` in `.env`.
+
+`PolicyManager.Tests/Messaging/` covers the wiring without a broker: that the disabled default
+registers the stand-in and no bus, that enabling replaces it, that configuration binds either way,
+that an invalid configuration is rejected at registration, and — against MassTransit's in-memory
+harness — that the outbox row reaches the publish pipeline with its identifier and header intact
+and that a transport failure propagates rather than being swallowed.
