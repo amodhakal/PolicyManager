@@ -2,6 +2,7 @@ using System.Linq.Expressions;
 using Microsoft.EntityFrameworkCore;
 using PolicyManager.Data;
 using PolicyManager.DTOs;
+using PolicyManager.Exceptions;
 using PolicyManager.Models;
 using PolicyManager.Models.Enums;
 
@@ -155,10 +156,11 @@ public class PoliciesService(AppDbContext context) : IPoliciesService
     /// <param name="id">The policy identifier.</param>
     /// <param name="dto">The policy data transfer object containing updated details.</param>
     /// <param name="cancellationToken">Token used to cancel the operation.</param>
+    /// <exception cref="NotFoundException">The policy does not exist.</exception>
     public async Task Update(int id, UpdatePolicyDto dto, CancellationToken cancellationToken = default)
     {
-        var policy = await context.Policies.FindAsync([id], cancellationToken);
-        if (policy == null) return;
+        var policy = await context.Policies.FindAsync([id], cancellationToken)
+            ?? throw new NotFoundException("Policy", id);
 
         // Applied conditionally: a field the caller omitted must leave the stored value alone rather
         // than overwrite it with a type default.
@@ -177,10 +179,11 @@ public class PoliciesService(AppDbContext context) : IPoliciesService
     /// </summary>
     /// <param name="id">The policy identifier.</param>
     /// <param name="cancellationToken">Token used to cancel the operation.</param>
+    /// <exception cref="NotFoundException">The policy does not exist.</exception>
     public async Task Cancel(int id, CancellationToken cancellationToken = default)
     {
-        var policy = await context.Policies.FindAsync([id], cancellationToken);
-        if (policy == null) return;
+        var policy = await context.Policies.FindAsync([id], cancellationToken)
+            ?? throw new NotFoundException("Policy", id);
 
         policy.Status = PolicyStatus.Cancelled;
 
