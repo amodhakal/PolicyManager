@@ -119,6 +119,7 @@ jobs:
         run: |
           dotnet ef migrations has-pending-model-changes \
             --project PolicyManager/PolicyManager.csproj \
+            --configuration Release \
             --no-build
 
   # No `needs:` on purpose. This job is deliberately independent of
