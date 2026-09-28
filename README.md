@@ -453,6 +453,122 @@ it, so they stayed invisible to every list reader until the entry expired.
 
 ---
 
+## Protecting Personal Data
+
+Policyholder email addresses are the only personal data this service holds. They get three
+protections, because any one of them alone leaves the obvious gap.
+
+```json
+"Pii": {
+  "AuditAccess": true,
+  "BackfillOnStartup": true
+}
+```
+
+The keys are **not** in `appsettings.json`. Supply `Pii__EncryptionKey` (base64, exactly 32 bytes for
+AES-256 — `openssl rand -base64 32`) and `Pii__BlindIndexKey` (at least 32 bytes) from a secret
+store. The process **refuses to start** if either is missing or too short. A short AES key is not
+padded up to strength; accepting one would mean believing the data is protected when it is not.
+
+### Encryption at rest
+
+`Email` is stored as AES-256-GCM ciphertext through an EF value converter, so nothing above the
+persistence layer knows the value is encrypted. GCM is *authenticated*: a tampered row fails to
+decrypt rather than returning corrupted personal data, and `PiiProtectionTests` asserts that by
+flipping a bit.
+
+Ciphertext is **randomised** — a fresh nonce per write — so two holders with the same address do not
+produce the same bytes. That is also why the address column cannot be indexed at all, and why
+`QueryIndexTests` asserts that it is not.
+
+### The blind index
+
+A randomised column cannot be compared, so the unique constraint on the address has to move to
+something deterministic. `EmailHash` is an **HMAC-SHA256** of the normalised address, keyed with a
+key the database never sees.
+
+HMAC rather than a plain hash: an unkeyed hash of an email address is trivially reversible by brute
+force, because addresses are low-entropy and a wordlist of them is easy to obtain. That would put
+every address back in the clear in a column that looks harmless. HMAC makes the index safe to store
+beside the ciphertext it protects.
+
+The index is stamped in `AppDbContext.SaveChanges`, **not** by a value converter. A converter applies
+to both sides of a comparison, so a query for `EmailHash == x` would search for the hash *of* `x` and
+find nothing — silently disabling the duplicate-address check. Stamping on save is also what makes it
+correct on every write path, including ones that do not go through a service.
+
+### Access control
+
+| | Sees the address |
+| --- | --- |
+| `Admin`, `Adjuster` | In the clear |
+| `Agent` | Masked: `j***@***.com` |
+| Unauthenticated | 403 — no token at all |
+
+Authorization already stops anonymous callers; what it does not do is narrow *reads*. An agent who
+files a claim on someone's behalf has no need for their address, and returning it anyway means a
+compromised agent account discloses contact details for the whole book. An adjuster contacts holders
+about claims, so they keep the address.
+
+The mask keeps the first character of the local part and the domain's public suffix, because a mask
+nobody can recognise is useless in a support conversation and gets read out over the telephone anyway.
+Everything that identifies a person is gone, and the length does not reveal the original.
+
+**The mask is applied per response, never to the cached value.** The single-holder cache entry is
+shared, so masking the cached copy would serve a disclosed address to an agent who is only entitled
+to the masked form.
+
+### Audit trail
+
+`PiiAccessAudits` records every read of a holder: who, with which roles, when, from which path, under
+which correlation ID, and **whether the address was disclosed or masked**. "Read the record" and
+"read the contact details" are different acts, and a disclosure review needs to know which happened.
+
+The row is written in the request's own context, so it commits with the read that caused it. Writing it
+afterwards would leave a window where a successful disclosure had no record at all — which is exactly
+the window an auditor would ask about.
+
+The log **never copies the data it audits**. An access log containing the personal data is one more
+store to redact rather than a control.
+
+For the same reason the address is **absent from the `PolicyHolderCreated` outbox message**. An outbox
+message is a broadcast to whatever consumes it, and its retention is not this service's to bound;
+publishing the address there would copy personal data out of the one store that protects it.
+Consumers that need it read the holder, which is access-controlled and audited. The message carries
+`HasEmail` instead.
+
+### Rolling this out: two phases, deliberately
+
+The data cannot be converted in T-SQL. AES-GCM has no SQL Server equivalent, and the blind index is an
+HMAC precisely because a plain hash would be reversible. So the rows have to be read and written by
+the application, and the constraint has to wait for them.
+
+**Phase 1** — `PiiProtection` migration. Adds `EmailHash` as **nullable**, widens `Email`, and creates
+the audit table. Everything is additive and the old index is left alone, so this migration on its own
+still behaves. `PiiBackfillService` runs on start-up and converts rows with no blind index, in
+committed batches so progress is durable and the table stays usable throughout. It is idempotent and
+resumable, and a converted table makes its first pass return nothing.
+
+The duplicate-address **409 is preserved in the meantime** by an explicit check in
+`PolicyHoldersService.Create` against the blind index. Without it the guarantee would silently vanish
+for the length of the rollout.
+
+**Phase 2** — applied by hand, once the logs say the backfill is complete:
+
+```bash
+dotnet ef database update PiiProtection
+# watch for: "The PII backfill is complete after N passes."
+dotnet ef database update EnforcePiiBlindIndex
+```
+
+`EnforcePiiBlindIndex` makes the column `NOT NULL` and the index unique. It `THROW`s if any row
+still has no index, because an address left in plaintext with a NULL index is precisely the state this
+feature exists to end, and quietly skipping those rows would leave them there permanently.
+
+Applying it early either fails outright or succeeds over rows whose index was computed under a key
+about to change — and the database cannot tell the difference, which is why the ordering is a
+documented operator step rather than something the migration chain can enforce.
+
 ## Authentication and Authorization
 
 Every endpoint requires a bearer token. There is no anonymous read access: a leaked identifier is

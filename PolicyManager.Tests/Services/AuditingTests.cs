@@ -140,6 +140,10 @@ public class AuditingTests : IDisposable
     private sealed class StubCurrentUser(string actor) : ICurrentUser
     {
         public string Actor { get; } = actor;
+
+        public IReadOnlyCollection<string> Roles { get; } = [];
+
+        public bool IsInRole(string role) => false;
     }
 
     private sealed class FixedTimeProvider(DateTimeOffset now) : TimeProvider

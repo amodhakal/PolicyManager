@@ -38,16 +38,6 @@ public static class TestTokens
     public const string Audience = "policy-manager-tests-api";
 
     /// <summary>
-    ///     The configuration the test host is given, matching <see cref="SigningKey" /> and friends.
-    /// </summary>
-    public static Dictionary<string, string?> HostConfiguration() => new()
-    {
-        ["Jwt:Issuer"] = Issuer,
-        ["Jwt:Audience"] = Audience,
-        ["Jwt:SigningKey"] = SigningKey
-    };
-
-    /// <summary>
     ///     Mints a token for a subject carrying the given roles.
     /// </summary>
     /// <param name="subject">The subject the token identifies, and the audit actor it produces.</param>

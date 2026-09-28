@@ -80,6 +80,11 @@ public class AppDbContext : DbContext
     /// </summary>
     public DbSet<BusinessNumberSequence> BusinessNumberSequences { get; set; }
 
+    /// <summary>
+    ///     Gets or sets the log of reads of personally identifiable information.
+    /// </summary>
+    public DbSet<PiiAccessAudit> PiiAccessAudits { get; set; }
+
     /// <inheritdoc />
     public override int SaveChanges(bool acceptAllChangesOnSuccess)
     {
@@ -117,6 +122,9 @@ public class AppDbContext : DbContext
                 case EntityState.Added:
                     entry.Entity.CreatedAt = now;
                     entry.Entity.CreatedBy = actor;
+
+                    if (entry.Entity is PolicyHolder holder) StampBlindIndex(holder);
+
                     break;
 
                 case EntityState.Modified:
@@ -127,6 +135,24 @@ public class AppDbContext : DbContext
                     break;
             }
         }
+    }
+
+    /// <summary>
+    ///     Fills in the blind index of a policyholder about to be inserted.
+    /// </summary>
+    /// <remarks>
+    ///     Computed here rather than through a value converter, because a converter is applied to
+    ///     both sides of a comparison: a query for <c>EmailHash == x</c> would search for the hash
+    ///     <em>of</em> <c>x</c> and find nothing, which would silently disable the duplicate-address
+    ///     check. Stamping on save is also what makes it correct on every write path, including ones
+    ///     that do not go through a service.
+    /// </remarks>
+    private void StampBlindIndex(PolicyHolder holder)
+    {
+        var cipher = PiiCipher.Current;
+
+        if (cipher is not null)
+            holder.EmailHash = cipher.BlindIndex(holder.Email);
     }
 
     /// <summary>
@@ -154,13 +180,35 @@ public class AppDbContext : DbContext
             .HasIndex(p => new { p.PolicyHolderId, p.Id })
             .HasDatabaseName("IX_Policies_PolicyHolderId_Id");
 
-        // Serves both the duplicate-email check on insert and the email ordering.
+        // The address is stored encrypted, and the ciphertext is randomised, so it cannot be indexed
+        // or compared. The unique constraint therefore runs over the keyed hash, which is
+        // deterministic and safe to store beside it. See PiiCipher for why it is keyed rather than
+        // merely hashed.
         modelBuilder.Entity<PolicyHolder>()
-            .HasIndex(p => p.Email)
-            .IsUnique();
+            .Property(p => p.Email)
+            .HasConversion(
+                email => PiiCipher.Current!.Encrypt(email),
+                stored => PiiCipher.Current!.Decrypt(stored));
+
+        // Not unique yet. Uniqueness is the second phase (migration EnforcePiiBlindIndex), applied
+        // once the backfill has given every row a blind index; declaring it here before then would
+        // make EF want to build the unique index over rows that are still NULL.
+        modelBuilder.Entity<PolicyHolder>()
+            .HasIndex(p => p.EmailHash)
+            .HasDatabaseName("IX_PolicyHolder_EmailHash");
 
         // Replaces a plain (LastName) index, which could not supply the Id tie-breaker the list
         // appends to every ORDER BY and so had to sort the candidate rows before paging them.
+        modelBuilder.Entity<PiiAccessAudit>()
+            .HasIndex(a => new { a.PolicyHolderId, a.OccurredAt })
+            .HasDatabaseName("IX_PiiAccessAudits_Holder_OccurredAt");
+
+        // Retained so a disclosure review can answer "who read this holder's data" in date order
+        // without scanning the whole log, which is the one query this table exists to answer.
+        modelBuilder.Entity<PiiAccessAudit>()
+            .HasIndex(a => a.OccurredAt)
+            .HasDatabaseName("IX_PiiAccessAudits_OccurredAt");
+
         modelBuilder.Entity<PolicyHolder>()
             .HasIndex(p => new { p.LastName, p.Id })
             .HasDatabaseName("IX_PolicyHolders_LastName_Id");

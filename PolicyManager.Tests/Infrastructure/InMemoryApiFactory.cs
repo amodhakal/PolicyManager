@@ -2,7 +2,6 @@ using Microsoft.AspNetCore.Hosting;
 using Microsoft.AspNetCore.Mvc.Testing;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Diagnostics;
-using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 using PolicyManager.Data;
 
@@ -79,8 +78,7 @@ public class InMemoryApiFactory : WebApplicationFactory<Program>
         // Always supplied, so a test host cannot come up with authentication unconfigured. The
         // application refuses to start in that state, which would otherwise turn every test into a
         // startup-failure test rather than a test of the thing under test.
-        builder.ConfigureAppConfiguration((_, configuration) =>
-            configuration.AddInMemoryCollection(TestTokens.HostConfiguration()));
+        builder.AddTestAuthentication();
 
         ConfigureHost?.Invoke(builder);
     }
@@ -90,16 +88,7 @@ public class InMemoryApiFactory : WebApplicationFactory<Program>
     /// </summary>
     /// <returns>A client for the test server.</returns>
     public new HttpClient CreateAuthenticatedClient()
-    {
-        var client = CreateClient();
-
-        if (AuthenticateByDefault)
-        {
-            client.DefaultRequestHeaders.Authorization = new System.Net.Http.Headers.AuthenticationHeaderValue(
-                "Bearer",
-                TestTokens.Mint(DefaultSubject, DefaultRoles));
-        }
-
-        return client;
-    }
+        => AuthenticateByDefault
+            ? this.CreateAuthenticatedClient(DefaultSubject, DefaultRoles)
+            : CreateClient();
 }

@@ -34,10 +34,23 @@ public class QueryIndexTests
     [Fact]
     public void A_policyholder_email_is_unique()
     {
-        var index = Find(PolicyHolder, "IX_PolicyHolder_Email");
+        // The constraint is over the keyed hash, not the address. The address is stored as
+        // randomised ciphertext and so cannot be indexed or compared at all; the hash is
+        // deterministic and safe to store beside it.
+        var index = Find(PolicyHolder, "IX_PolicyHolder_EmailHash");
 
-        Assert.True(index.IsUnique);
-        Assert.Equal([nameof(Models.PolicyHolder.Email)], Columns(index));
+        // Indexed but not yet unique: the unique constraint is the second phase, applied once every
+        // existing row has a blind index. See the PiiProtection migration for why it is two phases.
+        Assert.Equal([nameof(Models.PolicyHolder.EmailHash)], Columns(index));
+    }
+
+    [Fact]
+    public void The_encrypted_address_is_not_itself_indexed()
+    {
+        // An index over a randomised ciphertext would be both useless and enormous: the column
+        // changes on every write, so every insert would update the index for no lookup benefit.
+        Assert.Null(PolicyHolder.GetIndexes()
+            .FirstOrDefault(i => i.Properties.Any(p => p.Name == nameof(Models.PolicyHolder.Email))));
     }
 
     [Fact]

@@ -41,6 +41,20 @@ public abstract class ServiceTestBase : IDisposable
     protected BusinessNumberGenerator Numbers { get; }
 
     /// <summary>
+    ///     A guard that discloses everything and records nothing, for service tests that are not
+    ///     about personal data. The PII behaviour has its own tests, which use the real guard.
+    /// </summary>
+    protected IPiiGuard Pii { get; } = new PermissivePiiGuard();
+
+    private sealed class PermissivePiiGuard : IPiiGuard
+    {
+        public bool MayDisclose() => true;
+
+        public Task RecordAccessAsync(int policyHolderId, bool disclosed,
+            CancellationToken cancellationToken = default) => Task.CompletedTask;
+    }
+
+    /// <summary>
     ///     Releases the resources owned by this instance.
     /// </summary>
     public void Dispose()

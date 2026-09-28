@@ -14,7 +14,8 @@ namespace PolicyManager.Services;
 public class PolicyHoldersService(
     AppDbContext context,
     IMemoryCache cache,
-    PolicyHolderWriteGenerations generations) : IPolicyHoldersService
+    PolicyHolderWriteGenerations generations,
+    IPiiGuard pii) : IPolicyHoldersService
 {
     /// <summary>
     ///     Approximate managed-memory footprint, in bytes, of one <see cref="PolicyHolderDto" />: a 16-byte object
@@ -55,9 +56,11 @@ public class PolicyHoldersService(
         // database pick the plan for a bare COUNT is cheaper than ordering rows it will then discard.
         var totalCount = await context.PolicyHolders.CountAsync(cancellationToken);
 
-        // Ordering happens on the entity query and the projection to the DTO happens after Skip/Take,
-        // so the database applies the sort and the offset rather than materializing every holder to
-        // slice in memory.
+        var mayDisclose = pii.MayDisclose();
+
+        // Decryption happens in the value converter, on the way out of the database, so a projection
+        // cannot accidentally bypass it. Masking happens after that, here, and only for callers not
+        // entitled to the address.
         var items = await ApplySorting(context.PolicyHolders, pagination.SortBy, pagination.Descending)
             .Skip((pagination.Page - 1) * pagination.PageSize)
             .Take(pagination.PageSize)
@@ -72,6 +75,15 @@ public class PolicyHoldersService(
                 RowVersion = ConcurrencyTokens.ToToken(h.RowVersion)
             })
             .ToListAsync(cancellationToken);
+
+        foreach (var holder in items)
+        {
+            if (!mayDisclose) holder.Email = PiiGuard.Mask(holder.Email);
+
+            // Audited per holder rather than once per page: the log has to say whose data was read,
+            // and a page-level row cannot say that.
+            await pii.RecordAccessAsync(holder.Id, mayDisclose, cancellationToken);
+        }
 
         return PagedResult<PolicyHolderDto>.Create(items, totalCount, pagination.Page, pagination.PageSize);
     }
@@ -148,15 +160,43 @@ public class PolicyHoldersService(
             })
             .FirstOrDefaultAsync(cancellationToken);
 
-        if (holder != null) cache.Set(key, holder, new MemoryCacheEntryOptions
+        if (holder != null)
         {
-            Size = PolicyHolderSizeBytes,
-            Priority = CacheItemPriority.High,
-            AbsoluteExpirationRelativeToNow = SinglePolicyHolderExpiration
-        });
+            // Masking happens after the cache, and the cached copy keeps whatever the first caller
+            // was entitled to. A shared cache entry holding a disclosed address would then be served
+            // to an agent who is only entitled to the masked form, so the mask is applied per
+            // response and never to the cached value.
+            var mayDisclose = pii.MayDisclose();
+            await pii.RecordAccessAsync(holder.Id, mayDisclose, cancellationToken);
 
-        return holder;
+            cache.Set(key, holder, new MemoryCacheEntryOptions
+            {
+                Size = PolicyHolderSizeBytes,
+                Priority = CacheItemPriority.High,
+                AbsoluteExpirationRelativeToNow = SinglePolicyHolderExpiration
+            });
+
+            return mayDisclose ? holder : Masked(holder);
+        }
+
+        return null;
     }
+
+    /// <summary>
+    ///     Returns a copy of a holder with the contact address masked.
+    /// </summary>
+    /// <param name="holder">The holder read from the store.</param>
+    /// <returns>A copy safe to return to a caller not entitled to the address.</returns>
+    private static PolicyHolderDto Masked(PolicyHolderDto holder) => new()
+    {
+        Id = holder.Id,
+        FirstName = holder.FirstName,
+        LastName = holder.LastName,
+        Email = PiiGuard.Mask(holder.Email),
+        UpdatedAt = holder.UpdatedAt,
+        UpdatedBy = holder.UpdatedBy,
+        RowVersion = holder.RowVersion
+    };
 
     /// <summary>
     ///     Creates a new policyholder and records an outbox message transactionally.
@@ -188,10 +228,25 @@ public class PolicyHoldersService(
         var holder = new PolicyHolder
             { FirstName = dto.FirstName, LastName = dto.LastName, Email = dto.Email };
 
+        // Checked here as well as by the unique index, because the index on the blind index is not
+        // applied until the second-phase migration and the index on the address column is over
+        // randomised ciphertext and can never fire. Without this the duplicate-address 409 would
+        // silently disappear for the length of the rollout.
+        var duplicate = await context.PolicyHolders
+            .AsNoTracking()
+            .AnyAsync(h => h.EmailHash == PiiCipher.Current!.BlindIndex(dto.Email), cancellationToken);
+
+        if (duplicate) throw new ConflictException(
+            $"A policyholder with the email address '{PiiGuard.Mask(dto.Email)}' already exists.");
+
+        // The address is deliberately absent. An outbox message is a broadcast to whatever consumes
+        // it, and its retention is not this service's to bound; putting a policyholder's email there
+        // would copy personal data out of the one store that protects it. Consumers that need it can
+        // read the holder, which is access-controlled and audited.
         await context.AddWithOutboxAsync(
             holder,
             "PolicyHolderCreated",
-            h => new { h.Id, h.FirstName, h.LastName, h.Email },
+            h => new { h.Id, h.FirstName, h.LastName, HasEmail = h.Email.Length > 0 },
             cancellationToken);
 
         generations.Advance(holder.Id);

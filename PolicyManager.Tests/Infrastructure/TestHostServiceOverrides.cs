@@ -1,5 +1,7 @@
 using Microsoft.AspNetCore.Hosting;
+using Microsoft.AspNetCore.Mvc.Testing;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.DependencyInjection.Extensions;
 using Microsoft.Extensions.Hosting;
@@ -47,6 +49,46 @@ public static class TestHostServiceOverrides
     ///     <c>OutboxProcessorBackgroundServiceTests</c>, where running it is the point.
     /// </remarks>
     /// <param name="services">The service collection to mutate.</param>
+    public static void AddTestAuthentication(
+        this IWebHostBuilder builder,
+        string? issuer = null,
+        string? audience = null,
+        string? signingKey = null)
+    {
+        builder.ConfigureAppConfiguration((_, configuration) =>
+            configuration.AddInMemoryCollection(new Dictionary<string, string?>
+            {
+                ["Jwt:Issuer"] = issuer ?? TestTokens.Issuer,
+                ["Jwt:Audience"] = audience ?? TestTokens.Audience,
+                ["Jwt:SigningKey"] = signingKey ?? TestTokens.SigningKey,
+                ["Pii:EncryptionKey"] = PiiCipher.EncryptionKey,
+                ["Pii:BlindIndexKey"] = PiiCipher.BlindIndexKey
+            }));
+    }
+
+    /// <summary>
+    ///     Creates a client presenting a bearer token the host's own validation will accept.
+    /// </summary>
+    /// <remarks>
+    ///     The token is signed with the key the host was configured with and evaluated by the
+    ///     production pipeline. Stubbing the authentication scheme instead would keep every test green
+    ///     if the signature, issuer, audience, lifetime or role mapping were wrong.
+    /// </remarks>
+    public static HttpClient CreateAuthenticatedClient(
+        this WebApplicationFactory<Program> factory,
+        string subject = "test-user",
+        IEnumerable<string>? roles = null)
+    {
+        var client = factory.CreateClient();
+        client.DefaultRequestHeaders.Authorization = new System.Net.Http.Headers.AuthenticationHeaderValue(
+            "Bearer", TestTokens.Mint(subject, roles));
+
+        return client;
+    }
+
+    /// <summary>
+    ///     Removes the outbox polling service so tests observe a quiescent outbox.
+    /// </summary>
     public static void RemoveOutboxProcessor(IServiceCollection services)
     {
         services.RemoveAll<IHostedService>();

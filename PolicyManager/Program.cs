@@ -46,6 +46,10 @@ builder.Services.Configure<JwtOptions>(builder.Configuration.GetSection(JwtOptio
 builder.Services.AddBearerAuthentication();
 builder.Services.AddPolicyAuthorization();
 
+builder.Services.Configure<PiiOptions>(builder.Configuration.GetSection(PiiOptions.SectionName));
+builder.Services.AddSingleton<PiiCipher>();
+builder.Services.AddSingleton<PiiBackfillService>();
+
 // Versioning is configured before MVC so the API explorer can read it, and both are additive: the
 // unversioned routes still exist and still mean 1.0. ReportApiVersions makes every response say which
 // versions the endpoint supports, so a client can discover that without a second call or a document.
@@ -134,6 +138,7 @@ builder.Services.AddScoped<IBusinessNumberGenerator, BusinessNumberGenerator>();
 // differs per request.
 builder.Services.AddHttpContextAccessor();
 builder.Services.AddScoped<ICurrentUser, HttpContextCurrentUser>();
+builder.Services.AddScoped<IPiiGuard, PiiGuard>();
 
 builder.Services.TryAddSingleton(TimeProvider.System);
 builder.Services.TryAddSingleton<IOutboxPublisher, LoggingOutboxPublisher>();
@@ -147,6 +152,21 @@ var app = builder.Build();
 // authentication switched off and looking healthy while doing so. Resolved from the built host so
 // the check sees the finished configuration, including any source registered after this point.
 app.Services.GetRequiredService<IOptions<JwtOptions>>().Value.Validate();
+
+// The PII cipher is validated first and then published to the static the EF value converters read,
+// because a converter is constructed while the model is being built — before any service provider
+// exists to resolve options from. Validating before publishing means a missing or short key stops
+// the process rather than producing a model that encrypts with nothing.
+app.Services.GetRequiredService<IOptions<PiiOptions>>().Value.Validate();
+PiiCipher.Use(app.Services.GetRequiredService<PiiCipher>());
+
+// Only on a database that still holds addresses written before encryption existed. Selects rows
+// with no blind index, so a converted table makes the first pass return nothing and the task stops.
+if (app.Configuration.GetValue($"{PiiOptions.SectionName}:BackfillOnStartup", true))
+{
+    var backfill = app.Services.GetRequiredService<PiiBackfillService>();
+    _ = Task.Run(() => backfill.RunUntilCompleteAsync(CancellationToken.None), CancellationToken.None);
+}
 
 if (app.Environment.IsDevelopment())
 {

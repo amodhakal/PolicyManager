@@ -32,7 +32,7 @@ public class PaginationTests : ServiceTestBase
     public PaginationTests()
     {
         _cache = new Mock<IMemoryCache>();
-        _policyHoldersService = new PolicyHoldersService(Context, _cache.Object, new PolicyHolderWriteGenerations());
+        _policyHoldersService = new PolicyHoldersService(Context, _cache.Object, new PolicyHolderWriteGenerations(), Pii);
         _policiesService = new PoliciesService(Context, Numbers);
         _claimsService = new ClaimsService(Context, Numbers);
     }

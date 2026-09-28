@@ -43,5 +43,16 @@ public class SqlServerApiFactory : WebApplicationFactory<Program>
 
             services.AddDbContext<AppDbContext>(options => options.UseSqlServer(_connectionString));
         });
+
+        // Same reason as the in-memory factory: the application refuses to start without a signing
+        // key, so a test host has to supply one.
+        builder.AddTestAuthentication();
     }
+
+    /// <summary>
+    ///     Creates a client presenting an admin bearer token.
+    /// </summary>
+    /// <returns>A client for the test server.</returns>
+    public HttpClient CreateAuthenticatedClient(string subject = "test-user", string[]? roles = null)
+        => this.CreateAuthenticatedClient(subject, roles ?? [PolicyManager.Services.PolicyRoles.Admin]);
 }

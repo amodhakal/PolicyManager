@@ -22,7 +22,7 @@ public class PolicyHoldersServiceTests : ServiceTestBase
     {
         _cache = new MemoryCache(new MemoryCacheOptions());
         _generations = new PolicyHolderWriteGenerations();
-        _policyHoldersService = new PolicyHoldersService(Context, _cache, _generations);
+        _policyHoldersService = new PolicyHoldersService(Context, _cache, _generations, Pii);
     }
 
     /// <summary>
