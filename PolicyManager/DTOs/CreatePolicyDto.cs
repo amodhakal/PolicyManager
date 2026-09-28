@@ -38,6 +38,16 @@ public class CreatePolicyDto : IValidatableObject
     public PolicyType? Type { get; set; }
 
     /// <summary>
+    ///     The maximum total claimable against this policy, or null for no stated limit.
+    /// </summary>
+    /// <remarks>
+    ///     Optional, and null means unlimited rather than zero. A limit is a property of the policy
+    ///     being issued, so it is supplied at creation rather than bolted on afterwards.
+    /// </remarks>
+    [Range(typeof(decimal), "0.01", "99999999.99")]
+    public decimal? CoverageLimit { get; set; }
+
+    /// <summary>
     ///     The start date of the policy coverage.
     /// </summary>
     [Required]

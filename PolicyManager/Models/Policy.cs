@@ -41,6 +41,18 @@ public class Policy
     public decimal Premium { get; set; }
 
     /// <summary>
+    ///     The maximum total that may be claimed against this policy, or null for no stated limit.
+    /// </summary>
+    /// <remarks>
+    ///     Deliberately separate from <see cref="Premium" />, which is what the holder pays. Conflating
+    ///     them would cap a policy's payout at its price, which is not what either number means. Null
+    ///     means unlimited, which is a legitimate configuration: a policy with no stated limit should
+    ///     accept any claim, not reject every one of them.
+    /// </remarks>
+    [Column(TypeName = "decimal(10,2)")]
+    public decimal? CoverageLimit { get; set; }
+
+    /// <summary>
     ///     The start date of the policy coverage.
     /// </summary>
     [Required]

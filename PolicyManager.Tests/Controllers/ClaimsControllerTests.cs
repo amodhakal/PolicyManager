@@ -26,15 +26,21 @@ public class ClaimsControllerTests : ApiIntegrationTestBase
     }
 
     /// <summary>
-    ///     Creating a claim against a non-existent policy returns 400.
+    ///     Creating a claim against a non-existent policy returns 404.
     /// </summary>
+    /// <remarks>
+    ///     Was 400, from the controller's own <c>BadRequest("Policy does not exist.")</c>. That check
+    ///     moved into the service, which needs the loaded policy to evaluate the coverage rules
+    ///     anyway, and it now raises <c>NotFoundException</c> - mapped to 404, which is the correct
+    ///     status for a resource referenced by a valid request that does not exist.
+    /// </remarks>
     [Fact]
-    public async Task CreateClaim_NonExistentPolicy_ReturnsBadRequest()
+    public async Task CreateClaim_NonExistentPolicy_ReturnsNotFound()
     {
         var res = await Client.PostAsJsonAsync("/api/claims",
             new CreateClaimDto { PolicyId = 99999, Amount = 300m });
 
-        Assert.Equal(HttpStatusCode.BadRequest, res.StatusCode);
+        Assert.Equal(HttpStatusCode.NotFound, res.StatusCode);
     }
 
     /// <summary>

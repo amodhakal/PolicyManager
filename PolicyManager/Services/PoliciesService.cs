@@ -47,7 +47,8 @@ public class PoliciesService(AppDbContext context) : IPoliciesService
                 PolicyNumber = p.PolicyNumber,
                 Premium = p.Premium,
                 Status = p.Status,
-                PolicyholderName = $"{p.PolicyHolder.FirstName} {p.PolicyHolder.LastName}"
+                PolicyholderName = $"{p.PolicyHolder.FirstName} {p.PolicyHolder.LastName}",
+                CoverageLimit = p.CoverageLimit
             })
             .ToListAsync(cancellationToken);
 
@@ -113,20 +114,10 @@ public class PoliciesService(AppDbContext context) : IPoliciesService
                 PolicyNumber = p.PolicyNumber,
                 Premium = p.Premium,
                 Status = p.Status,
-                PolicyholderName = $"{p.PolicyHolder.FirstName} {p.PolicyHolder.LastName}"
+                PolicyholderName = $"{p.PolicyHolder.FirstName} {p.PolicyHolder.LastName}",
+                CoverageLimit = p.CoverageLimit
             })
             .FirstOrDefaultAsync(cancellationToken);
-    }
-
-    /// <summary>
-    ///     Determines whether a policy with the given identifier exists.
-    /// </summary>
-    /// <param name="id">The policy identifier.</param>
-    /// <param name="cancellationToken">Token used to cancel the operation.</param>
-    /// <returns>True if a policy with the identifier exists; otherwise, false.</returns>
-    public async Task<bool> ExistsAsync(int id, CancellationToken cancellationToken = default)
-    {
-        return await context.Policies.AnyAsync(p => p.Id == id, cancellationToken);
     }
 
     /// <summary>
@@ -144,6 +135,7 @@ public class PoliciesService(AppDbContext context) : IPoliciesService
             PolicyHolderId = dto.PolicyHolderId,
             Type = dto.Type ?? throw new InvalidOperationException(
                 $"{nameof(CreatePolicyDto.Type)} is required and was not supplied."),
+            CoverageLimit = dto.CoverageLimit,
             StartDate = dto.StartDate,
             EndDate = dto.EndDate
         };

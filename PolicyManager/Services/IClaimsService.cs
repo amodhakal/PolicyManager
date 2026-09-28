@@ -27,18 +27,29 @@ public interface IClaimsService
     public Task<ClaimDto?> GetById(int id, CancellationToken cancellationToken = default);
 
     /// <summary>
-    ///     Creates a new claim.
+    ///     Files a claim against a policy, subject to the policy's status and coverage limit.
     /// </summary>
+    /// <exception cref="Exceptions.NotFoundException">The referenced policy does not exist.</exception>
+    /// <exception cref="Exceptions.BusinessRuleException">
+    ///     The policy is not active, or the claim exceeds its remaining coverage.
+    /// </exception>
     /// <param name="dto">The claim creation data transfer object.</param>
     /// <param name="cancellationToken">Token used to cancel the operation.</param>
     /// <returns>The unique identifier of the newly created claim.</returns>
     public Task<int> Create(CreateClaimDto dto, CancellationToken cancellationToken = default);
 
     /// <summary>
-    ///     Updates the status of an existing claim.
+    ///     Adjudicates a claim, enforcing the legal status transitions.
     /// </summary>
     /// <param name="id">The claim identifier.</param>
     /// <param name="dto">The claim status update data transfer object containing the new status.</param>
+    /// <param name="decidedBy">The identifier of the adjuster making the decision.</param>
+    /// <param name="adjusterNotes">The adjuster's notes.</param>
     /// <param name="cancellationToken">Token used to cancel the operation.</param>
-    public Task UpdateStatus(int id, UpdateClaimStatusDto dto, CancellationToken cancellationToken = default);
+    public Task UpdateStatus(
+        int id,
+        UpdateClaimStatusDto dto,
+        string? decidedBy = null,
+        string? adjusterNotes = null,
+        CancellationToken cancellationToken = default);
 }
