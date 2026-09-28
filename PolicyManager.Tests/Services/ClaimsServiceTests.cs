@@ -1,4 +1,5 @@
 using PolicyManager.DTOs;
+using PolicyManager.Exceptions;
 using PolicyManager.Models;
 using PolicyManager.Models.Enums;
 using PolicyManager.Services;
@@ -96,14 +97,18 @@ public class ClaimsServiceTests : ServiceTestBase
     }
 
     /// <summary>
-    ///     Verifies that updating status for non-existent claim does not throw.
+    ///     Verifies that adjudicating a non-existent claim raises NotFoundException.
     /// </summary>
+    /// <remarks>
+    ///     This asserted the opposite: that the call completed silently. A silent completion is
+    ///     indistinguishable at the call site from a successful write, which is how a missing entity
+    ///     came to be reported to API callers as a 200.
+    /// </remarks>
     [Fact]
-    public async Task UpdateStatus_NonExistentId_DoesNotThrow()
+    public async Task UpdateStatus_NonExistentId_ThrowsNotFound()
     {
-        var ex = await Record.ExceptionAsync(() =>
+        await Assert.ThrowsAsync<NotFoundException>(() =>
             _claimsService.UpdateStatus(99999, new UpdateClaimStatusDto { Status = ClaimStatus.Approved }));
-        Assert.Null(ex);
     }
 
     /// <summary>

@@ -266,6 +266,48 @@ rows written afterwards are not reflected in it.
 
 ---
 
+## Claim Lifecycle
+
+Adjudication is enforced as a state machine, not a free-text status field.
+
+```
+   Pending ──┬──> Approved   (terminal)
+             └──> Denied     (terminal)
+```
+
+`Pending` is the only status a claim can move out of, and `Approved`/`Denied` are terminal.
+`PATCH /api/claims/{id}/status` accepts only these transitions and answers **422** with the
+permitted targets in the body otherwise. Previously the endpoint assigned whatever status it was
+given, so a **denied claim could be flipped back to approved** and a paid claim silently retracted.
+A transition to the status a claim already holds is also rejected rather than treated as a
+successful no-op, which would otherwise stamp a fresh decision date on an undecided claim.
+
+The rules live in `PolicyManager/Domain/` as pure functions over a loaded entity, so they can be
+read and tested without a database, a clock or a service. `ClaimRules.EnsurePolicyAcceptsClaims`
+rejects a claim against a cancelled or expired policy — previously only the policy's *existence*
+was checked, so a cancelled policy still accepted claims. `ClaimRules.EnsureWithinCoverage` checks
+both a single claim and the running total against `Policy.CoverageLimit`:
+
+- Checking only the single amount would let a caller file four claims that each fit under the limit
+  and collectively exceed it, so both are checked.
+- A **denied** claim releases its coverage, since the amount was never payable. Pending and approved
+  claims both reserve value that could still be paid out; counting only approved claims would allow
+  unlimited pending claims against an exhausted policy.
+- A `null` `CoverageLimit` means **unlimited**, not zero. Treating a missing limit as zero would
+  reject every claim against an unconfigured policy.
+
+`CoverageLimit` is supplied when the policy is issued and is deliberately separate from `Premium`,
+which is what the holder pays — conflating them would cap a policy's payout at its price.
+
+Adjudication also records an audit trail: `AdjusterNotes`, `DecisionDate` and `DecidedBy`, all
+nullable so "not yet adjudicated" stays distinguishable from "adjudicated with nothing recorded".
+`DecisionDate` is set by the server and cannot be backdated by the caller.
+
+A claim against a policy that does not exist is now a **404** rather than a 400; the existence
+check moved into the service, which needs the loaded policy to evaluate the coverage rules anyway.
+
+---
+
 ## Health Checks
 
 Two unauthenticated endpoints, both registered with `MapHealthChecks` and both emitting JSON:
@@ -316,6 +358,19 @@ Because the app calls `UseHttpsRedirection()`, a plain-HTTP probe against a conf
 gets a `307` rather than a verdict. Point probes at the HTTPS endpoint. (With no HTTPS port
 configured — the container, which is published on `http://localhost:8080` — the redirection is a
 logged no-op and `/health` answers directly.)
+
+### Omitted fields are rejected, not defaulted
+
+Every enum in this domain starts at a meaningful value: `PolicyType.Auto`, `PolicyStatus.Active`
+and `ClaimStatus.Pending` are all `0`. A non-nullable property therefore cannot distinguish "the
+caller sent the first member" from "the caller sent nothing" — both bind to the same value. So
+`CreatePolicyDto.Type` and `UpdateClaimStatusDto.Status` are nullable with `[Required]`, and an
+omitted field is a 400 rather than a silent default.
+
+`PUT /api/policies/{id}` applies only the fields supplied. Omitting `status` used to reset a
+cancelled policy to `Active`, because a non-nullable enum bound the omission to its zero member;
+omitting `premium` used to set it to `0`. A request that supplies neither is rejected as a no-op
+rather than reported as a success.
 
 ---
 

@@ -6,6 +6,13 @@ namespace PolicyManager.DTOs;
 /// <summary>
 ///     Data transfer object for creating a new policy.
 /// </summary>
+/// <remarks>
+///     <see cref="Type" /> is nullable so that an omitted field is distinguishable from an explicit
+///     zero value. <see cref="PolicyType" /> has no "unknown" member, so its default of
+///     <see cref="PolicyType.Auto" /> is a perfectly valid choice; binding an omitted field to it
+///     would silently issue an Auto policy when the caller asked for something else or asked for
+///     nothing.
+/// </remarks>
 public class CreatePolicyDto : IValidatableObject
 {
     /// <summary>
@@ -25,9 +32,20 @@ public class CreatePolicyDto : IValidatableObject
     public int PolicyHolderId { get; set; }
 
     /// <summary>
-    ///     The type of insurance policy.
+    ///     The type of insurance policy. Required.
     /// </summary>
-    public PolicyType Type { get; set; }
+    [Required]
+    public PolicyType? Type { get; set; }
+
+    /// <summary>
+    ///     The maximum total claimable against this policy, or null for no stated limit.
+    /// </summary>
+    /// <remarks>
+    ///     Optional, and null means unlimited rather than zero. A limit is a property of the policy
+    ///     being issued, so it is supplied at creation rather than bolted on afterwards.
+    /// </remarks>
+    [Range(typeof(decimal), "0.01", "99999999.99")]
+    public decimal? CoverageLimit { get; set; }
 
     /// <summary>
     ///     The start date of the policy coverage.
@@ -46,8 +64,8 @@ public class CreatePolicyDto : IValidatableObject
     /// </summary>
     /// <param name="validationContext">The context of the validation being performed.</param>
     /// <returns>
-    ///     A single result when the end date does not fall strictly after the start date; otherwise an
-    ///     empty collection.
+    ///     A result when the end date does not fall strictly after the start date; otherwise an empty
+    ///     collection.
     /// </returns>
     public IEnumerable<ValidationResult> Validate(ValidationContext validationContext)
     {

@@ -2,6 +2,8 @@ using System.Linq.Expressions;
 using Microsoft.EntityFrameworkCore;
 using PolicyManager.Data;
 using PolicyManager.DTOs;
+using PolicyManager.Domain;
+using PolicyManager.Exceptions;
 using PolicyManager.Models;
 using PolicyManager.Models.Enums;
 
@@ -38,7 +40,10 @@ public class ClaimsService(AppDbContext context) : IClaimsService
                 Amount = c.Amount,
                 Description = c.Description,
                 Status = c.Status,
-                FiledAt = c.FiledAt
+                FiledAt = c.FiledAt,
+                DecisionDate = c.DecisionDate,
+                DecidedBy = c.DecidedBy,
+                AdjusterNotes = c.AdjusterNotes
             })
             .ToListAsync(cancellationToken);
 
@@ -105,7 +110,10 @@ public class ClaimsService(AppDbContext context) : IClaimsService
                 Amount = c.Amount,
                 Description = c.Description,
                 Status = c.Status,
-                FiledAt = c.FiledAt
+                FiledAt = c.FiledAt,
+                DecisionDate = c.DecisionDate,
+                DecidedBy = c.DecidedBy,
+                AdjusterNotes = c.AdjusterNotes
             })
             .FirstOrDefaultAsync(cancellationToken);
     }
@@ -113,11 +121,30 @@ public class ClaimsService(AppDbContext context) : IClaimsService
     /// <summary>
     ///     Creates a new claim and records an outbox message transactionally.
     /// </summary>
+    /// <remarks>
+    ///     The policy is loaded rather than merely checked for existence, because the rules that
+    ///     govern a filing need its status and coverage limit. Previously only existence was
+    ///     verified, so a claim could be filed against a cancelled policy and paid out.
+    /// </remarks>
     /// <param name="dto">The claim data transfer object.</param>
     /// <param name="cancellationToken">Token used to cancel the operation.</param>
     /// <returns>The unique identifier of the newly created claim.</returns>
+    /// <exception cref="NotFoundException">The referenced policy does not exist.</exception>
+    /// <exception cref="BusinessRuleException">The policy will not accept this claim.</exception>
     public async Task<int> Create(CreateClaimDto dto, CancellationToken cancellationToken = default)
     {
+        var policy = await context.Policies
+            .FirstOrDefaultAsync(p => p.Id == dto.PolicyId, cancellationToken)
+            ?? throw new NotFoundException("Policy", dto.PolicyId);
+
+        ClaimRules.EnsurePolicyAcceptsClaims(policy);
+
+        var alreadyClaimed = await context.Claims
+            .Where(c => c.PolicyId == policy.Id && IsRecognisedAgainstCoverage(c))
+            .SumAsync(c => (decimal?)c.Amount, cancellationToken) ?? 0m;
+
+        ClaimRules.EnsureWithinCoverage(policy, dto.Amount, alreadyClaimed);
+
         var claim = new Claim
         {
             PolicyId = dto.PolicyId,
@@ -142,17 +169,51 @@ public class ClaimsService(AppDbContext context) : IClaimsService
     /// <param name="id">The claim identifier.</param>
     /// <param name="dto">The claim status update data transfer object containing the new status.</param>
     /// <param name="cancellationToken">Token used to cancel the operation.</param>
-    public async Task UpdateStatus(int id, UpdateClaimStatusDto dto, CancellationToken cancellationToken = default)
+    public async Task UpdateStatus(
+        int id,
+        UpdateClaimStatusDto dto,
+        string? decidedBy = null,
+        string? adjusterNotes = null,
+        CancellationToken cancellationToken = default)
     {
-        var claim = await context.Claims.FindAsync([id], cancellationToken);
-        if (claim == null) return;
+        var target = dto.Status ?? throw new InvalidOperationException(
+            $"{nameof(UpdateClaimStatusDto.Status)} is required and was not supplied.");
 
-        claim.Status = dto.Status;
+        var claim = await context.Claims.FindAsync([id], cancellationToken)
+            ?? throw new NotFoundException("Claim", id);
+
+        if (!ClaimStatusTransitions.IsAllowed(claim.Status, target))
+        {
+            throw new BusinessRuleException(
+                $"A claim cannot move from {claim.Status} to {target}. " +
+                $"Permitted from {claim.Status}: {ClaimStatusTransitions.DescribeAllowed(claim.Status)}.",
+                IllegalTransitionRule);
+        }
+
+        claim.Status = target;
+        claim.DecisionDate = DateTime.UtcNow;
+        claim.DecidedBy = decidedBy;
+        claim.AdjusterNotes = adjusterNotes;
 
         await context.SaveWithOutboxAsync(
             claim,
             "ClaimStatusUpdated",
-            c => new { c.Id, c.PolicyId, c.Status },
+            c => new { c.Id, c.PolicyId, c.Status, c.DecisionDate, c.DecidedBy },
             cancellationToken);
     }
+
+    /// <summary>
+    ///     Rule identifier reported when a status transition is not legal.
+    /// </summary>
+    public const string IllegalTransitionRule = "illegal-claim-transition";
+
+    /// <summary>
+    ///     Whether a claim's amount counts against its policy's coverage limit.
+    /// </summary>
+    /// <remarks>
+    ///     Pending and approved claims both reserve value that can still be paid out; only a denied
+    ///     claim releases it. Counting only approved claims would let a caller file unlimited pending
+    ///     claims against an exhausted policy and have every one denied afterwards.
+    /// </remarks>
+    private static bool IsRecognisedAgainstCoverage(Claim claim) => claim.Status != ClaimStatus.Denied;
 }

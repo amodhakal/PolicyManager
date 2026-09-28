@@ -43,6 +43,11 @@ public class PolicyDto
     public PolicyType Type { get; set; }
 
     /// <summary>
+    ///     The maximum total claimable against this policy, or null when there is no stated limit.
+    /// </summary>
+    public decimal? CoverageLimit { get; set; }
+
+    /// <summary>
     ///     The start date of the policy coverage.
     /// </summary>
     public DateTime StartDate { get; set; }

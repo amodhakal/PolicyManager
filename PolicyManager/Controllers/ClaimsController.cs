@@ -13,7 +13,7 @@ namespace PolicyManager.Controllers;
 /// </remarks>
 [ApiController]
 [Route("api/[controller]")]
-public class ClaimsController(IClaimsService claimsService, IPoliciesService policiesService)
+public class ClaimsController(IClaimsService claimsService)
     : ControllerBase
 {
     /// <summary>
@@ -52,36 +52,40 @@ public class ClaimsController(IClaimsService claimsService, IPoliciesService pol
     }
 
     /// <summary>
-    ///     Creates a new claim.
+    ///     Files a claim against an active policy, subject to the policy's coverage limit.
     /// </summary>
     /// <param name="dto">The claim creation data transfer object containing claim details.</param>
     /// <param name="cancellationToken">Token used to cancel the operation.</param>
     /// <returns>A created result whose body is the new claim.</returns>
     /// <response code="201">Claim created successfully.</response>
-    /// <response code="400">Policy does not exist.</response>
+    /// <response code="404">The referenced policy does not exist.</response>
+    /// <response code="422">The policy is not active, or the claim exceeds its remaining coverage.</response>
     [HttpPost]
     public async Task<ActionResult<ClaimDto>> Create(CreateClaimDto dto, CancellationToken cancellationToken)
     {
-        if (!await policiesService.ExistsAsync(dto.PolicyId, cancellationToken)) return BadRequest("Policy does not exist.");
-
+        // The policy existence and status checks live in the service, which needs the loaded policy
+        // to evaluate the coverage rules anyway. Duplicating them here meant a second round trip and
+        // a second, differently-shaped error for the same condition.
         var claimId = await claimsService.Create(dto, cancellationToken);
         var claim = await claimsService.GetById(claimId, cancellationToken);
         return CreatedAtAction(nameof(GetById), new { id = claimId }, claim);
     }
 
     /// <summary>
-    ///     Updates the status of an existing claim.
+    ///     Adjudicates a claim, recording who decided it and any notes.
     /// </summary>
     /// <param name="id">The claim identifier.</param>
-    /// <param name="dto">The claim status update data transfer object containing the new status.</param>
+    /// <param name="dto">The adjudication body: the new status, and optionally the adjuster and notes.</param>
     /// <param name="cancellationToken">Token used to cancel the operation.</param>
     /// <returns>No content if successful.</returns>
     /// <response code="200">Status updated successfully.</response>
+    /// <response code="400">The status is missing.</response>
     /// <response code="404">Claim not found.</response>
+    /// <response code="422">The transition is not legal from the claim's current status.</response>
     [HttpPatch("{id:int}/status")]
     public async Task<ActionResult> UpdateStatus(int id, UpdateClaimStatusDto dto, CancellationToken cancellationToken)
     {
-        await claimsService.UpdateStatus(id, dto, cancellationToken);
+        await claimsService.UpdateStatus(id, dto, dto.DecidedBy, dto.Notes, cancellationToken);
         return Ok();
     }
 }

@@ -46,6 +46,27 @@ public class Claim
     public DateTime FiledAt { get; set; } = DateTime.UtcNow;
 
     /// <summary>
+    ///     Free-text notes recorded by the adjuster who decided the claim. Null until adjudicated.
+    /// </summary>
+    /// <remarks>
+    ///     Nullable rather than an empty string so "not yet adjudicated" and "adjudicated with no
+    ///     notes" stay distinguishable. That distinction matters when auditing who decided what.
+    /// </remarks>
+    [MaxLength(1000)]
+    public string? AdjusterNotes { get; set; }
+
+    /// <summary>
+    ///     When the claim was adjudicated. Null while the claim is still pending.
+    /// </summary>
+    public DateTime? DecisionDate { get; set; }
+
+    /// <summary>
+    ///     The identifier of the adjuster who made the decision. Null while the claim is still pending.
+    /// </summary>
+    [MaxLength(100)]
+    public string? DecidedBy { get; set; }
+
+    /// <summary>
     ///     The unique identifier of the policy associated with this claim.
     /// </summary>
     [Required]

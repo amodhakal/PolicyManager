@@ -41,4 +41,19 @@ public class ClaimDto
     ///     The date and time when the claim was filed.
     /// </summary>
     public DateTime FiledAt { get; set; }
+
+    /// <summary>
+    ///     The date and time when the claim was adjudicated, or null while it is still pending.
+    /// </summary>
+    public DateTime? DecisionDate { get; set; }
+
+    /// <summary>
+    ///     The identifier of the adjuster who decided the claim, or null while it is still pending.
+    /// </summary>
+    public string? DecidedBy { get; set; }
+
+    /// <summary>
+    ///     Notes recorded by the adjuster, or null when none were recorded.
+    /// </summary>
+    public string? AdjusterNotes { get; set; }
 }

@@ -4,11 +4,10 @@ namespace PolicyManager.Exceptions;
 ///     Thrown when a requested resource does not exist, or is not visible to the caller.
 /// </summary>
 /// <remarks>
-///     The vocabulary the API uses to report a missing entity, mapped to a 404 with a ProblemDetails
-///     body by <see cref="Errors.GlobalExceptionHandler" />. The services do not throw it yet — they
-///     return null or complete silently, and the controllers decide the status — so today this type
-///     is reachable only from tests. It exists so that the failure modes have one representation
-///     rather than each endpoint inventing its own.
+///     Mapped to a 404 with a ProblemDetails body by <see cref="Errors.GlobalExceptionHandler" />.
+///     Services throw this rather than returning null or completing silently, because a silent
+///     completion is indistinguishable at the call site from a successful write — which is how a
+///     missing entity came to be reported to an API caller as a 200.
 /// </remarks>
 public class NotFoundException(string resource, object key)
     : Exception($"'{resource}' with identifier '{key}' was not found.")
