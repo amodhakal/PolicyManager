@@ -31,6 +31,8 @@ Every endpoint is authenticated and role-authorized, personal data is encrypted 
 | GitHub Actions          | CI pipeline (build, test on every push to main) |
 | Docker / Docker Compose | Containerized local environment |
 | xUnit                   | Unit testing (service and controller layers) |
+| Angular                 | Web client for the API (`client/`) |
+| Vitest                  | Unit testing (client) |
 
 
 ---
@@ -64,6 +66,44 @@ dotnet ef migrations add <MigrationName> --project PolicyManager/PolicyManager.c
 Swagger UI is available at `https://localhost:7100/swagger` (the `https` profile in
 `PolicyManager/Properties/launchSettings.json`). The app calls `UseHttpsRedirection()`,
 so plain HTTP requests are redirected to HTTPS.
+
+### The Angular client
+
+`client/` is a standalone Angular application covering every endpoint: policyholders, policies,
+claims and the three reports, with the writes each role is allowed to perform.
+
+```bash
+cd client
+npm install
+npm start          # http://localhost:4200
+```
+
+> **The API must already be running**, and its schema must already exist — see
+> [Known Issues](#known-issues): on `main` the migration chain does not apply to an empty
+> database, so step 2 of [How to Run](#how-to-run) currently fails.
+
+**It asks for a bearer token on first run.** The API has no login endpoint — it validates
+externally minted JWTs and exposes nothing that issues one — so the client accepts a pasted
+token and keeps it in `localStorage`. The token is decoded to read the caller's roles so the UI
+can hide what would answer 403; nothing is enforced client-side, and the API remains the only
+thing that decides. A token carrying none of `Admin`, `Adjuster` or `Agent` is rejected up
+front, because such a token would authenticate and then be refused by every policy.
+
+**The dev server proxies to the API** rather than the API enabling CORS. A CORS policy would
+let any origin call a service holding encrypted personal data, for the benefit of a local
+setup; a same-origin proxy costs the API nothing. The target defaults to
+`https://localhost:7080` and is overridden with `POLICYMANAGER_API` for a container or a
+remote API:
+
+```bash
+POLICYMANAGER_API=http://localhost:8080 npm start
+```
+
+```bash
+cd client
+npm test           # Vitest
+npm run build      # production bundle into client/dist/
+```
 
 ### The app will not start without three secrets
 
@@ -171,6 +211,27 @@ in `.env.example` is deliberately invalid and will crash-loop the database conta
   *instance* but no `PolicyManager` database. `dotnet ef database update` and the container
   entrypoint both connect with `Database=PolicyManager`, so that database must exist first.
 
+- **The migration chain does not apply to an empty database.** Two independent faults, in the
+  order you meet them:
+
+  1. `dotnet ef migrations has-pending-model-changes` reports drift, and the CLI turns that
+     into a hard error, so `dotnet ef database update` refuses to run at all. The cause is
+     `EnforcePiiBlindIndex`: the migration and the snapshot both leave `EmailHash` as
+     `NOT NULL` with a unique index, while `AppDbContext` still declares it nullable with a
+     plain index — deliberately, per the two-phase rollout described under
+     [Protecting Personal Data](#protecting-personal-data). EF derives the snapshot from the
+     model, so a model that stays at phase one and a migration that encodes phase two cannot
+     both be right. The CI job `migration-drift` fails on this.
+  2. Past that, `20260928175037_QueryIndexes` fails with *"an index or statistics with name
+     'IX_OutboxMessages_Pending' already exists"*. It creates the replacement index under the
+     same name an earlier migration already used, and only drops the old one afterwards. An
+     index name is unique per table, so the create can never succeed; the intent stated in its
+     own comment — replace without ever leaving a query unindexed — needs the new index to be
+     built under a temporary name, the old one dropped, and the new one renamed.
+
+  Together these mean the API cannot be started from a clean database, and the SQL Server
+  suite is failing on every test rather than on any real regression. Tracked in issue #126.
+
 - **`scripts/*.ts` are broken against the current API.** They were written before
   authentication, rate limiting and request size limits existed, and all three get in their
   way: every request now needs a bearer token, thousands of `POST`s in parallel will be
@@ -179,9 +240,10 @@ in `.env.example` is deliberately invalid and will crash-loop the database conta
   run that fails entirely looks like a success. Treat them as a sketch of the intended
   load profile, not as working tooling. Tracked in issues #18, #67.
 
-- **There is no frontend.** Every endpoint needs a token, and there is nothing in this
-  repository that mints one or exercises the API by hand. Driving the API means writing a
-  token first. Tracked in issue #89.
+- **There is no token issuer.** Every endpoint needs a bearer token and nothing in this
+  repository mints one for a human — `TestTokens` exists but is test-only. Driving the API
+  means writing a token first, whether by hand or through the client, which accepts a pasted
+  one. Tracked in issue #89.
 
 - **Encrypted email columns only support equality.** The `Email` column is ciphertext, so the
   only comparison available against it is the `EmailHash` blind index — an exact match. A
@@ -558,6 +620,11 @@ PolicyManager/
 │   ├── Data/
 │   ├── Integration/
 │   └── Infrastructure/
+├── client/                 # Angular client
+│   ├── src/app/core/       # API client, auth, list state, problem-details handling
+│   ├── src/app/features/   # one folder per resource: list, detail, reports
+│   ├── src/app/shared/     # banner, pager, badge
+│   └── proxy.conf.json     # dev proxy to the API, so the API needs no CORS policy
 ├── scripts/
 │   ├── addPolicyHolders.ts
 │   ├── addPolicy.ts
