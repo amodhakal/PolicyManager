@@ -232,6 +232,10 @@ in `.env.example` is deliberately invalid and will crash-loop the database conta
   Together these mean the API cannot be started from a clean database, and the SQL Server
   suite is failing on every test rather than on any real regression. Tracked in issue #126.
 
+- **The non-SQL-Server suite is red on `main`.** One failure,
+  `ApiVersioningTests.Every_controller_declares_a_version`, because `ReportsController` has no
+  `[ApiVersion]` — see issue #128.
+
 - **`scripts/*.ts` are broken against the current API.** They were written before
   authentication, rate limiting and request size limits existed, and all three get in their
   way: every request now needs a bearer token, thousands of `POST`s in parallel will be
@@ -244,6 +248,22 @@ in `.env.example` is deliberately invalid and will crash-loop the database conta
   repository mints one for a human — `TestTokens` exists but is test-only. Driving the API
   means writing a token first, whether by hand or through the client, which accepts a pasted
   one. Tracked in issue #89.
+
+- **The reports are unauthenticated.** `ReportsController` carries no `[Authorize]` and the
+  project sets no fallback authorization policy, so all three `/api/reports/*` routes answer
+  an anonymous caller — verified, not inferred. They are aggregate rather than per-record, but
+  they still expose policyholder names, premium totals and claim amounts, and they directly
+  contradict the "no anonymous read access" claim above. `ReportsController` also has no
+  `[ApiVersion]`, so its routes are unreachable at a versioned URL and
+  `ApiVersioningTests.Every_controller_declares_a_version` fails. Tracked in issue #128.
+
+- **Soft delete and restore are open to any role.** `PUT`/`DELETE` on a policyholder and
+  `DELETE`/`PATCH .../restore` on a claim carry no policy attribute, so they inherit the
+  class-level `AnyRole` and an `Agent` may perform them. Every other write in the API is
+  explicitly gated, and soft delete is exactly the kind of destructive operation that should
+  be — the README previously implied it was. `AuthorizationTests` covers reads, adjudication,
+  policy creation and holder registration, but not these five methods, so nothing caught it.
+  Tracked in issue #128.
 
 - **Encrypted email columns only support equality.** The `Email` column is ciphertext, so the
   only comparison available against it is the `EmailHash` blind index — an exact match. A
@@ -301,11 +321,15 @@ running the real EF migrations rather than `EnsureCreated`, so these tests also 
 migration scripts are valid and complete. The container is shared across the collection, so it
 starts once per run.
 
-CI splits this into three independent jobs: the InMemory suite with coverage, the
-SQL Server suite, and a `dotnet ef migrations has-pending-model-changes` check. That last one
-matters because a model change shipped without a matching migration is invisible to both test
-suites — the InMemory provider builds from the model, and the SQL Server tests would fail on a
-missing table rather than on the drift.
+CI splits this into four independent jobs: the InMemory suite with coverage, the
+SQL Server suite, a `dotnet ef migrations has-pending-model-changes` check, and a Docker image
+build. A fifth job builds and tests the Angular client. The model-drift check matters because a
+model change shipped without a matching migration is invisible to both test suites — the
+InMemory provider builds from the model, and the SQL Server tests would fail on a missing table
+rather than on the drift.
+
+Line coverage on the InMemory suite, excluding `Migrations/**`, is **83.4%** (380 tests). The
+client adds 18 further specs over its own logic.
 
 Shared test infrastructure lives in `PolicyManager.Tests/Infrastructure/`:
 `InMemoryApiFactory` swaps the SQL Server `AppDbContext` for the InMemory provider and supplies
@@ -316,11 +340,10 @@ seeding helpers, `TestTokens` mints signed tokens with real role claims, `Servic
 per-test `DbContext` and `Dispose` for the service tests, and `SqlServerFixture`/`SqlServerTestBase`
 own the container. Add new tests by deriving from those rather than repeating the setup.
 
-CI runs `dotnet test` on every push to `main` and on every pull request targeting `main`,
-excluding `Migrations/**` from coverage, and uploads the report to Codecov. A second,
-independent job builds the Docker image without running it, so a Dockerfile regression fails
-CI without needing a database. Note that CI only runs for pull requests whose **base** is
-`main`; a pull request based on another branch does not trigger it.
+CI runs on every push to `main` **only**. There is no `pull_request` trigger, so a pull request
+gets no checks at all — a green `main` says nothing about whether the branch behind a pull
+request builds, and this has been the case for the whole history of the file. The `client` job
+added with the Angular client inherits the same gap.
 
 ---
 
@@ -332,6 +355,7 @@ CI without needing a database. Note that CI only runs for pull requests whose **
 | `GET` | `/api/policyholders` | List a page of policyholders; supports `?page=`, `?pageSize=`, `?sortBy=`, `?descending=` |
 | `POST` | `/api/policyholders` | Create a policyholder; a duplicate email is a 409 |
 | `GET` | `/api/policyholders/{id}` | Get by ID |
+| `GET` | `/api/policyholders/{id}/policies` | Search that holder's policies; supports `?status=` and the paging/sorting options |
 | `PUT` | `/api/policyholders/{id}` | Update `firstName`, `lastName` or `email`; omitted fields are left alone |
 | `DELETE` | `/api/policyholders/{id}` | Soft delete; hides the holder, keeps the row and their policies |
 | `PATCH` | `/api/policyholders/{id}/restore` | Undo a soft delete; idempotent |
@@ -342,6 +366,7 @@ CI without needing a database. Note that CI only runs for pull requests whose **
 | `GET` | `/api/policies` | List a page of policies; supports `?status=Active` and the paging/sorting options |
 | `POST` | `/api/policies` | Create a policy linked to a policyholder; an unknown holder is a 404 |
 | `GET` | `/api/policies/{id}` | Get with policyholder info |
+| `GET` | `/api/policies/{id}/claims` | Search that policy's claims; supports `?status=` and the paging/sorting options |
 | `PUT` | `/api/policies/{id}` | Update status or premium |
 | `DELETE` | `/api/policies/{id}` | Soft delete, sets status to `Cancelled` |
 
@@ -355,6 +380,33 @@ CI without needing a database. Note that CI only runs for pull requests whose **
 | `DELETE` | `/api/claims/{id}` | Soft delete a claim awaiting adjudication, hides it and keeps the row |
 | `PATCH` | `/api/claims/{id}/restore` | Undo a soft delete |
 
+### Reports
+| Method | Route | Description |
+|---|---|---|
+| `GET` | `/api/reports/open-claims-by-status` | Open claims per status, with counts, totals and averages |
+| `GET` | `/api/reports/premium-by-type` | Total premium per policy type, with counts and averages |
+| `GET` | `/api/reports/claims-ratio-per-holder` | One page of policyholders, each with their open claim amount weighed against their premium |
+
+Every report is a single `GROUP BY` the database evaluates, except the claims ratio (below).
+The first two carry a row for **every member of its enum even at zero**, so the shape of a
+report does not change as data arrives. `Denied` is excluded from "open" everywhere, because it
+is the one status that is not open — the same rule the coverage checks use, shared as
+`ClaimStatusExtensions.IsOpen` rather than restated per query.
+
+Only holders who own a policy appear in the claims ratio: a holder with no premium has no
+ratio, and a row of zeros for each would bury the holders that do. It is the one list whose
+page slice is taken in memory — premium per holder and claims per holder are two different
+roll-ups, one from the policies and one from the claims joined back to their policy — so both
+are grouped by the database and the per-holder rows are combined afterwards. What that holds
+is proportional to the number of holders, not to the size of the book.
+
+> **The reports are the one part of the API that is not authenticated.** `ReportsController`
+> carries no `[Authorize]` and the project sets no fallback authorization policy, so all three
+> routes answer an anonymous caller. They are aggregate, not per-record, but they still expose
+> policyholder names, premium totals and claim amounts. This contradicts the "no anonymous
+> read access" claim under [Authentication](#authentication-and-authorization) and is a
+> defect, not a design choice — see issue #128.
+
 ### Health
 | Method | Route | Description |
 |---|---|---|
@@ -363,25 +415,32 @@ CI without needing a database. Note that CI only runs for pull requests whose **
 
 Route casing follows ASP.NET Core's default: `[Route("api/[controller]")]` resolves
 `PolicyHolders` to `/api/policyholders`, `Policies` to `/api/policies`, and `Claims` to
-`/api/claims`. All `{id}` segments are constrained to integers in code
-(`[HttpGet("{id:int}")]`).
+`/api/claims`; `ReportsController` is routed explicitly as `api/reports`. All `{id}` segments
+are constrained to integers in code (`[HttpGet("{id:int}")]`).
 
 Every endpoint requires a bearer token — see
-[Authentication and Authorization](#authentication-and-authorization). The two health
-endpoints are the exception: they are unauthenticated, because an orchestrator probing
-liveness has no credential to present and a probe that needs one cannot report an
-outage. That is why their failure descriptions are deliberately vague.
+[Authentication and Authorization](#authentication-and-authorization) — with the reports
+currently excepted, as noted above. The two health endpoints are the other exception: they
+are unauthenticated, because an orchestrator probing liveness has no credential to present
+and a probe that needs one cannot report an outage. That is why their failure descriptions
+are deliberately vague.
 
 ### Who may call what
 
-Roles are described in full under
-[Roles](#roles); the per-endpoint requirement is:
+Roles are described in full under [Roles](#roles). This table is the **actual** authorization
+surface, read off the attributes in code — the two entries marked as defects are the ones a
+reader is most likely to assume are restricted, and are not:
 
 | Operation | Requirement |
 |---|---|
-| Read any resource | `Agent`, `Adjuster` or `Admin` |
-| Create a policyholder, create or update a policy, file or adjudicate a claim | `Admin` or `Adjuster` |
+| Read any resource, including all reports | `Agent`, `Adjuster` or `Admin` |
+| Create a policyholder | `Admin` or `Adjuster` |
+| Create or update a policy | `Admin` or `Adjuster` |
+| File a claim | `Agent`, `Adjuster` or `Admin` |
+| Adjudicate a claim | `Admin` or `Adjuster` |
 | Delete a policy | `Admin` only |
+| **Update, soft-delete or restore a policyholder** | `Agent`, `Adjuster` or `Admin` — *intended to be `Admin`/`Adjuster`; the methods carry no policy attribute and inherit the class-level one. See issue #128.* |
+| **Soft-delete or restore a claim** | `Agent`, `Adjuster` or `Admin` — *same defect.* |
 
 An **adjudicated claim cannot be deleted at all**, by any role. The record of who decided
 it is why it stays in the book.
@@ -390,7 +449,7 @@ it is why it stays in the book.
 
 ## Pagination, Filtering and Sorting
 
-All three list endpoints take the same four query-string options and return a `PagedResult<T>`
+Every list endpoint takes the same four query-string options and returns a `PagedResult<T>`
 envelope instead of a bare array:
 
 | Option | Default | Behaviour |
@@ -418,6 +477,7 @@ order:
 | Policyholders | `id`, `firstName`, `lastName`, `email` | `id` |
 | Policies | `id`, `policyNumber`, `premium`, `status`, `policyHolderId` | `id` |
 | Claims | `id`, `claimNumber`, `amount`, `status`, `filedAt`, `policyId` | `id` |
+| Claims ratio per holder | `claimsRatio`, `totalPremium`, `openClaimCount`, `totalOpenClaimAmount`, `policyCount`, `policyHolderId` | `claimsRatio` **descending** |
 
 Every ordering appends the identifier as a tie-breaker. Without it, two rows sharing a last name
 or a premium could swap between two consecutive requests and the same page number would return
@@ -428,6 +488,18 @@ the SQL the database receives: the query stays an `IQueryable` and the DTO proje
 *after* `Skip`/`Take`, so paging happens in the database rather than over a materialized list.
 `?status=` on `/api/policies` still works and composes with paging — `totalCount` counts the
 filtered set only.
+
+The two nested searches take the same options and add `?status=`, and they answer 404 for a
+holder or policy that does not exist. A holder who exists but owns nothing matching the filter
+gets an empty page, because "no policies" and "no such holder" are different answers and
+collapsing them would tell a caller their policy book is empty when they asked about the wrong
+person.
+
+The claims-ratio report is the one list that inverts the direction rule: its default order is
+the ratio *descending*, because the report exists to surface the heaviest holders first, so
+`?descending=true` reverses that default rather than turning it ascending. A client that wires
+this to a generic ascending/descending toggle will show the *lightest* holders under a
+"heaviest first" label.
 
 A page is a snapshot. `totalCount` describes the rows that matched when the page was read, so
 rows written afterwards are not reflected in it.
@@ -633,6 +705,7 @@ PolicyManager/
 │   └── workflows/
 │       └── ci.yml
 ├── .env.example
+├── .dockerignore
 ├── PolicyManager.sln
 ├── compose.yaml
 └── README.md
