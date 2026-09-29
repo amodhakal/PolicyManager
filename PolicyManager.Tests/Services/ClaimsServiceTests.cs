@@ -163,10 +163,15 @@ public class ClaimsServiceTests : ServiceTestBase
     }
 
     /// <summary>
-    ///     A claim awaiting adjudication is removed outright.
+    ///     A claim awaiting adjudication is hidden from every read, while the row stays in the table.
     /// </summary>
+    /// <remarks>
+    ///     The row has to survive: it is a claim that was really filed, and the coverage it reserved is
+    ///     released by the read filter rather than by rewriting history. The outbox message records the
+    ///     removal for anyone who needs to know the claim is no longer being pursued.
+    /// </remarks>
     [Fact]
-    public async Task Delete_PendingClaim_RemovesTheRow()
+    public async Task Delete_HidesTheClaimButKeepsTheRow()
     {
         var policyId = await SeedPolicy();
         var id = await SeedClaim(policyId);
@@ -174,7 +179,65 @@ public class ClaimsServiceTests : ServiceTestBase
         var deleted = await _claimsService.Delete(id);
 
         Assert.True(deleted);
-        Assert.Null(await Context.Claims.FindAsync(id));
+        Assert.Null(await _claimsService.GetById(id));
+
+        var all = await _claimsService.GetAll(new PaginationQuery());
+        Assert.Empty(all.Items);
+        Assert.Equal(0, all.TotalCount);
+
+        var row = await Context.Claims.IgnoreQueryFilters().SingleAsync(c => c.Id == id);
+        Assert.True(row.IsDeleted);
+        Assert.NotNull(row.DeletionDate);
+    }
+
+    /// <summary>
+    ///     A restore brings a deleted claim back, with the status and amount it had.
+    /// </summary>
+    [Fact]
+    public async Task Restore_BringsTheClaimBack()
+    {
+        var policyId = await SeedPolicy();
+        var id = await SeedClaim(policyId, 250m);
+        await _claimsService.Delete(id);
+
+        var restored = await _claimsService.Restore(id);
+
+        Assert.True(restored);
+        var claim = await _claimsService.GetById(id);
+        Assert.Equal(250m, claim!.Amount);
+        Assert.Equal(ClaimStatus.Pending, claim.Status);
+
+        var row = await Context.Claims.SingleAsync(c => c.Id == id);
+        Assert.False(row.IsDeleted);
+        Assert.Null(row.DeletionDate);
+    }
+
+    /// <summary>
+    ///     Restoring a claim that was never deleted succeeds and changes nothing, so a client that
+    ///     retries does not get an error for a state it has already reached.
+    /// </summary>
+    [Fact]
+    public async Task Restore_OfAnActiveClaim_ChangesNothing()
+    {
+        var policyId = await SeedPolicy();
+        var id = await SeedClaim(policyId);
+
+        Assert.True(await _claimsService.Restore(id));
+
+        var row = await Context.Claims.SingleAsync(c => c.Id == id);
+        Assert.False(row.IsDeleted);
+        Assert.Null(row.DeletionDate);
+        Assert.Single(await Context.OutboxMessages.ToListAsync());
+    }
+
+    /// <summary>
+    ///     A restore of an identifier nobody holds reports that nothing was restored, which the
+    ///     controller turns into a 404.
+    /// </summary>
+    [Fact]
+    public async Task Restore_NonExistentClaim_ReturnsFalse()
+    {
+        Assert.False(await _claimsService.Restore(99999));
     }
 
     /// <summary>
@@ -205,6 +268,36 @@ public class ClaimsServiceTests : ServiceTestBase
         // With the pending claim gone the same claim is acceptable again.
         var id = await SeedClaim(policy.Id, 200m);
         Assert.True(id > 0);
+    }
+
+    /// <summary>
+    ///     A restored claim takes its amount back out of the policy's remaining coverage.
+    /// </summary>
+    [Fact]
+    public async Task Restore_ReservesItsCoverageAgain()
+    {
+        var policy = new Policy
+        {
+            PolicyHolderId = (await SeedHolderEntityAsync()).Id,
+            Premium = 500m,
+            Status = PolicyStatus.Active,
+            CoverageLimit = 300m
+        };
+
+        Context.Policies.Add(policy);
+        await Context.SaveChangesAsync();
+
+        var id = await SeedClaim(policy.Id, 200m);
+        await _claimsService.Delete(id);
+
+        // With the claim hidden the whole 300 of coverage is free again.
+        await _claimsService.Create(new CreateClaimDto { PolicyId = policy.Id, Amount = 200m });
+
+        await _claimsService.Restore(id);
+
+        // The restored claim and the second one no longer fit together.
+        await Assert.ThrowsAsync<BusinessRuleException>(
+            () => _claimsService.Create(new CreateClaimDto { PolicyId = policy.Id, Amount = 200m }));
     }
 
     /// <summary>

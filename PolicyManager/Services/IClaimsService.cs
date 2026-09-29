@@ -82,7 +82,7 @@ public interface IClaimsService
         CancellationToken cancellationToken = default);
 
     /// <summary>
-    ///     Deletes a claim that has not been adjudicated.
+    ///     Soft-deletes a claim that has not been adjudicated, keeping the row and hiding it.
     /// </summary>
     /// <remarks>
     ///     An approved or denied claim is a decision record and is refused; see the implementation.
@@ -92,4 +92,12 @@ public interface IClaimsService
     /// <returns>True when a claim was found and deleted; false when no claim has that identifier.</returns>
     /// <exception cref="Exceptions.ConflictException">The claim has already been adjudicated.</exception>
     public Task<bool> Delete(int id, CancellationToken cancellationToken = default);
+
+    /// <summary>
+    ///     Restores a soft-deleted claim, making it visible to every read again.
+    /// </summary>
+    /// <param name="id">The claim identifier.</param>
+    /// <param name="cancellationToken">Token used to cancel the operation.</param>
+    /// <returns>True when a claim with that identifier exists; false when none does.</returns>
+    public Task<bool> Restore(int id, CancellationToken cancellationToken = default);
 }

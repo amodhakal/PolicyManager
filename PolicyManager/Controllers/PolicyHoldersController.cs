@@ -133,22 +133,52 @@ public class PolicyHoldersController(IPolicyHoldersService policyHoldersService,
     }
 
     /// <summary>
-    ///     Deletes a policyholder who owns no policies.
+    ///     Soft-deletes a policyholder: the row is kept and hidden from every read.
     /// </summary>
     /// <remarks>
-    ///     A holder who still has policies is a 409 rather than a silent removal of them: their claims
-    ///     are financial records and are not destroyed by a contact-record change.
+    ///     The relationship from a policy to its holder cascades, so removing the holder outright would
+    ///     take their policies and, through them, every claim ever filed against them. A claim is a
+    ///     financial record carrying the adjudication trail, so that history is not destroyed by a
+    ///     contact-record change: the row survives and the holder is hidden instead, leaving the
+    ///     history intact and recoverable through <c>PATCH /api/policyholders/{id}/restore</c>.
+    ///     <para>
+    ///         The holder's policies stay in the book and keep naming them: only the holder's own
+    ///         record disappears, so the policies remain visible in the policy list and the reports
+    ///         while the holder is a 404 wherever they are addressed directly. Their address also
+    ///         stays taken, because the unique index still covers the row.
+    ///     </para>
     /// </remarks>
     /// <param name="id">The policyholder identifier.</param>
     /// <param name="cancellationToken">Token used to cancel the operation.</param>
     /// <returns>No content body if successful.</returns>
     /// <response code="200">Policyholder deleted successfully.</response>
     /// <response code="404">policyholder not found.</response>
-    /// <response code="409">The policyholder still owns policies.</response>
     [HttpDelete("{id:int}")]
     public async Task<ActionResult> Delete(int id, CancellationToken cancellationToken)
     {
         await policyHoldersService.Delete(id, cancellationToken);
         return Ok();
+    }
+
+    /// <summary>
+    ///     Restores a soft-deleted policyholder, making them visible to every read again.
+    /// </summary>
+    /// <remarks>
+    ///     Idempotent: restoring a policyholder who was never deleted changes nothing and succeeds.
+    ///     A restore cannot collide with a duplicate address, because a soft-deleted holder's address
+    ///     was never released to anybody else.
+    /// </remarks>
+    /// <param name="id">The policyholder identifier.</param>
+    /// <param name="cancellationToken">Token used to cancel the operation.</param>
+    /// <returns>The restored policyholder.</returns>
+    /// <response code="200">Returns the policyholder, restored or already active.</response>
+    /// <response code="404">policyholder not found.</response>
+    [HttpPatch("{id:int}/restore")]
+    public async Task<ActionResult<PolicyHolderDto>> Restore(int id, CancellationToken cancellationToken)
+    {
+        await policyHoldersService.Restore(id, cancellationToken);
+
+        var holder = await policyHoldersService.GetById(id, cancellationToken);
+        return Ok(holder);
     }
 }

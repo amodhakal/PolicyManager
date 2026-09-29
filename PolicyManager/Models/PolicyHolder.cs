@@ -56,6 +56,30 @@ public class PolicyHolder : IAuditableEntity
     public string? EmailHash { get; set; }
 
     /// <summary>
+    ///     Whether the policyholder has been soft-deleted.
+    /// </summary>
+    /// <remarks>
+    ///     A soft delete keeps the row and hides it, so the policyholder's policies and the claims
+    ///     filed against them survive and can be restored. A hard delete would cascade from the
+    ///     foreign keys and take that claim history with it.
+    ///     <para>
+    ///         Every read path filters on this, so a deleted policyholder disappears from the API
+    ///         without leaving the table. <c>DeletionDate</c> records when that happened for the audit
+    ///         trail.
+    ///     </para>
+    /// </remarks>
+    public bool IsDeleted { get; set; }
+
+    /// <summary>
+    ///     When the policyholder was soft-deleted, or null while they are active.
+    /// </summary>
+    /// <remarks>
+    ///     Distinct from <see cref="CreatedAt" /> so "never existed" and "was removed on this date"
+    ///     stay separable, which matters when a record is restored.
+    /// </remarks>
+    public DateTime? DeletionDate { get; set; }
+
+    /// <summary>
     ///     The collection of policies owned by this policyholder.
     /// </summary>
     public ICollection<Policy> Policies { get; set; } = new List<Policy>();

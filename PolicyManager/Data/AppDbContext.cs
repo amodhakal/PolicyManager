@@ -232,6 +232,22 @@ public class AppDbContext : DbContext
             .HasIndex(c => new { c.FiledAt, c.Id })
             .HasDatabaseName("IX_Claims_FiledAt_Id");
 
+        // Soft-deleted rows stay in the table but are invisible to every ordinary read, and the
+        // filter is applied once here rather than remembered at each query. A restore reaches past it
+        // deliberately, with IgnoreQueryFilters().
+        //
+        // Claims are filtered globally because nothing navigates *to* a claim and expects it to be
+        // there. Policyholders are not: a policy projects its holder's name, and a filter here would
+        // make that name null for the policies of a deleted holder. Those policies stay in the book,
+        // so the holder behind them is still named. PolicyHoldersService applies the filter to its own
+        // reads instead, and PoliciesService.GetByPolicyHolder applies it to the holder's existence
+        // check, so a deleted policyholder is a 404 everywhere they are addressed directly.
+        //
+        // No index is added for the flag. Nearly every row is undeleted, so an index over it would not
+        // be selective on a read, and a restore already seeks the primary key.
+        modelBuilder.Entity<Claim>()
+            .HasQueryFilter(c => !c.IsDeleted);
+
         // The dispatcher's poll. Keyed on CreatedAt because that is the ORDER BY, so the batch is a
         // forward walk of the live rows and the engine can stop as soon as it has enough. A filtered
         // index keeps processed and dead-lettered rows out entirely, so the structure stays small

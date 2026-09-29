@@ -270,14 +270,15 @@ public class ClaimsService(AppDbContext context, IBusinessNumberGenerator number
     public const string IllegalTransitionRule = "illegal-claim-transition";
 
     /// <summary>
-    ///     Deletes a claim that has not been adjudicated, and records an outbox message.
+    ///     Soft-deletes a claim that has not been adjudicated, keeping the row and hiding it.
     /// </summary>
     /// <remarks>
     ///     An approved or denied claim is a decision: it carries who decided it, when, and the notes
-    ///     they left, and deleting the row would erase that record while leaving the payout it settled
-    ///     untouched. Such a claim is refused as a conflict instead. A claim still pending adjudication
-    ///     has no decision behind it, so removing it destroys nothing that was ever decided and its
-    ///     amount is released back to the policy's remaining coverage.
+    ///     they left. Hiding one would take that record out of the book while leaving the payout it
+    ///     settled untouched, so it is refused as a conflict. A claim still pending adjudication has no
+    ///     decision behind it, so hiding it destroys nothing that was ever decided — and because the
+    ///     row survives, the amount it was reserving is released by the read filter rather than by
+    ///     editing history, and the claim can be brought back with <see cref="Restore" />.
     /// </remarks>
     /// <param name="id">The claim identifier.</param>
     /// <param name="cancellationToken">Token used to cancel the operation.</param>
@@ -293,11 +294,53 @@ public class ClaimsService(AppDbContext context, IBusinessNumberGenerator number
                 $"Claim '{id}' has been adjudicated as {claim.Status} and can no longer be deleted.");
         }
 
-        context.Claims.Remove(claim);
+        claim.IsDeleted = true;
+        claim.DeletionDate = DateTime.UtcNow;
 
         await context.SaveWithOutboxAsync(
             claim,
             "ClaimDeleted",
+            c => new { c.Id, c.PolicyId, c.Amount, c.Status, c.DeletionDate },
+            cancellationToken);
+
+        return true;
+    }
+
+    /// <summary>
+    ///     Restores a soft-deleted claim, making it visible to every read again.
+    /// </summary>
+    /// <remarks>
+    ///     Idempotent: restoring a claim that was never deleted changes nothing and succeeds. The
+    ///     query reaches past the read filter on deleted claims, because that filter is the very thing
+    ///     being undone.
+    ///     <para>
+    ///         A restore can put a claim's amount back inside a coverage limit that has since been
+    ///         consumed, and it can reinstate a claim against a policy that has since been cancelled.
+    ///         The claim comes back as it was rather than being re-checked, because a claim is a
+    ///         record of something that happened: whether it still fits is a question for the
+    ///         adjuster, not for a restore.
+    ///     </para>
+    /// </remarks>
+    /// <param name="id">The claim identifier.</param>
+    /// <param name="cancellationToken">Token used to cancel the operation.</param>
+    /// <returns>True when a claim with that identifier exists; false when none does.</returns>
+    public async Task<bool> Restore(int id, CancellationToken cancellationToken = default)
+    {
+        var claim = await context.Claims
+            .IgnoreQueryFilters()
+            .FirstOrDefaultAsync(c => c.Id == id, cancellationToken);
+        if (claim == null) return false;
+
+        // Only write when something actually changes, so a redundant restore publishes no outbox
+        // message and consumers are not told about a change that did not happen.
+        if (!claim.IsDeleted) return true;
+
+        claim.IsDeleted = false;
+        claim.DeletionDate = null;
+
+        await context.SaveWithOutboxAsync(
+            claim,
+            "ClaimRestored",
             c => new { c.Id, c.PolicyId, c.Amount, c.Status },
             cancellationToken);
 

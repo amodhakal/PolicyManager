@@ -106,12 +106,15 @@ public class ClaimsController(IClaimsService claimsService)
     }
 
     /// <summary>
-    ///     Deletes a claim that has not been adjudicated.
+    ///     Soft-deletes a claim that has not been adjudicated: the row is kept and hidden.
     /// </summary>
     /// <remarks>
-    ///     An approved or denied claim records who decided it, when, and why. Deleting it would erase
-    ///     that record while leaving the payout it settled in place, so it is refused with a 409 and the
-    ///     claim has to stay in the book.
+    ///     An approved or denied claim records who decided it, when, and why. Hiding it would take
+    ///     that record out of the book while leaving the payout it settled in place, so it is refused
+    ///     with a 409 and the claim has to stay in the book. A claim still pending adjudication has no
+    ///     decision behind it, and because the row survives, the amount it was reserving is released
+    ///     without editing history and the claim can be brought back by
+    ///     <c>PATCH /api/claims/{id}/restore</c>.
     /// </remarks>
     /// <param name="id">The claim identifier.</param>
     /// <param name="cancellationToken">Token used to cancel the operation.</param>
@@ -124,5 +127,28 @@ public class ClaimsController(IClaimsService claimsService)
     {
         var deleted = await claimsService.Delete(id, cancellationToken);
         return deleted ? Ok() : NotFound();
+    }
+
+    /// <summary>
+    ///     Restores a soft-deleted claim, making it visible to every read again.
+    /// </summary>
+    /// <remarks>
+    ///     Idempotent: restoring a claim that was never deleted changes nothing and succeeds. A restore
+    ///     can put a claim's amount back inside a coverage limit that has since been consumed, so the
+    ///     claim comes back as it was rather than being re-checked.
+    /// </remarks>
+    /// <param name="id">The claim identifier.</param>
+    /// <param name="cancellationToken">Token used to cancel the operation.</param>
+    /// <returns>The restored claim.</returns>
+    /// <response code="200">Returns the claim, restored or already active.</response>
+    /// <response code="404">Claim not found.</response>
+    [HttpPatch("{id:int}/restore")]
+    public async Task<ActionResult<ClaimDto>> Restore(int id, CancellationToken cancellationToken)
+    {
+        var restored = await claimsService.Restore(id, cancellationToken);
+        if (!restored) return NotFound();
+
+        var claim = await claimsService.GetById(id, cancellationToken);
+        return Ok(claim);
     }
 }

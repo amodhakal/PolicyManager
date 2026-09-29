@@ -54,8 +54,10 @@ public class PoliciesService(AppDbContext context, IBusinessNumberGenerator numb
     {
         // Distinguished from an empty page on purpose. A holder who owns nothing matching the filter
         // and a holder who does not exist are different answers, and reporting them alike would tell a
-        // caller their policy book is empty when in fact they asked about the wrong holder.
-        if (!await context.PolicyHolders.AnyAsync(h => h.Id == policyHolderId, cancellationToken))
+        // caller their policy book is empty when in fact they asked about the wrong holder. A holder
+        // who has been soft-deleted does not exist as far as the API is concerned, so they are a 404
+        // here too — even though their policies, which stay in the book, keep naming them.
+        if (!await context.PolicyHolders.AnyAsync(h => h.Id == policyHolderId && !h.IsDeleted, cancellationToken))
             throw new NotFoundException("PolicyHolder", policyHolderId);
 
         var query = context.Policies.Where(p => p.PolicyHolderId == policyHolderId);

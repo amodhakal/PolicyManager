@@ -73,10 +73,25 @@ public class Claim : IAuditableEntity
     public string? DecidedBy { get; set; }
 
     /// <summary>
-    ///     The unique identifier of the policy associated with this claim.
+    ///     The policy associated with this claim.
     /// </summary>
     [Required]
     public int PolicyId { get; set; }
+
+    /// <summary>
+    ///     Whether the claim has been soft-deleted.
+    /// </summary>
+    /// <remarks>
+    ///     A soft delete keeps the row and hides it, so the amount it reserved against its policy's
+    ///     coverage stops being reserved while the decision behind it stays on the record. Every read
+    ///     path filters on this, so a deleted claim is absent from the API without leaving the table.
+    /// </remarks>
+    public bool IsDeleted { get; set; }
+
+    /// <summary>
+    ///     When the claim was soft-deleted, or null while it is active.
+    /// </summary>
+    public DateTime? DeletionDate { get; set; }
 
     /// <summary>
     ///     The policy associated with this claim.
