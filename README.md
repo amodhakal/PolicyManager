@@ -78,6 +78,10 @@ npm install
 npm start          # http://localhost:4200
 ```
 
+> **The API must already be running**, and its schema must already exist — see
+> [Known Issues](#known-issues): on `main` the migration chain does not apply to an empty
+> database, so step 2 of [How to Run](#how-to-run) currently fails.
+
 **It asks for a bearer token on first run.** The API has no login endpoint — it validates
 externally minted JWTs and exposes nothing that issues one — so the client accepts a pasted
 token and keeps it in `localStorage`. The token is decoded to read the caller's roles so the UI
@@ -206,6 +210,27 @@ in `.env.example` is deliberately invalid and will crash-loop the database conta
 - **The database is never created for you.** `compose.yaml` provisions the SQL Server
   *instance* but no `PolicyManager` database. `dotnet ef database update` and the container
   entrypoint both connect with `Database=PolicyManager`, so that database must exist first.
+
+- **The migration chain does not apply to an empty database.** Two independent faults, in the
+  order you meet them:
+
+  1. `dotnet ef migrations has-pending-model-changes` reports drift, and the CLI turns that
+     into a hard error, so `dotnet ef database update` refuses to run at all. The cause is
+     `EnforcePiiBlindIndex`: the migration and the snapshot both leave `EmailHash` as
+     `NOT NULL` with a unique index, while `AppDbContext` still declares it nullable with a
+     plain index — deliberately, per the two-phase rollout described under
+     [Protecting Personal Data](#protecting-personal-data). EF derives the snapshot from the
+     model, so a model that stays at phase one and a migration that encodes phase two cannot
+     both be right. The CI job `migration-drift` fails on this.
+  2. Past that, `20260928175037_QueryIndexes` fails with *"an index or statistics with name
+     'IX_OutboxMessages_Pending' already exists"*. It creates the replacement index under the
+     same name an earlier migration already used, and only drops the old one afterwards. An
+     index name is unique per table, so the create can never succeed; the intent stated in its
+     own comment — replace without ever leaving a query unindexed — needs the new index to be
+     built under a temporary name, the old one dropped, and the new one renamed.
+
+  Together these mean the API cannot be started from a clean database, and the SQL Server
+  suite is failing on every test rather than on any real regression. Tracked in issue #126.
 
 - **`scripts/*.ts` are broken against the current API.** They were written before
   authentication, rate limiting and request size limits existed, and all three get in their

@@ -8,15 +8,21 @@
  *
  * Both paths are proxied, not just `/api`, because the health endpoints are the only unauthenticated
  * calls and the sign-in page uses one to tell "the API is down" from "this token is wrong".
+ *
+ * This file is read as JSON by the dev server, so it carries no comments in the body — the block
+ * above is the documentation. `process.env` is substituted at read time, which is what lets
+ * POLICYMANAGER_API retarget the client at a container or a deployed API without an edit.
  */
+const target = process.env['POLICYMANAGER_API'] ?? 'https://localhost:7080';
+
 export default {
   '/api': {
-    target: process.env['POLICYMANAGER_API'] ?? 'https://localhost:7080',
+    target,
     secure: false,
     changeOrigin: true,
   },
   '/health': {
-    target: process.env['POLICYMANAGER_API'] ?? 'https://localhost:7080',
+    target,
     secure: false,
     changeOrigin: true,
   },
