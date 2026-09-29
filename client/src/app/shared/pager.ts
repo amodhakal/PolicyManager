@@ -33,7 +33,11 @@ import { PagedResult } from '../core/models';
               }
             </select>
           </label>
-          <button type="button" [disabled]="!page.hasPrevious" (click)="pageChange.emit(page.page - 1)">
+          <button
+            type="button"
+            [disabled]="!page.hasPrevious"
+            (click)="pageChange.emit(page.page - 1)"
+          >
             Previous
           </button>
           <button type="button" [disabled]="!page.hasNext" (click)="pageChange.emit(page.page + 1)">

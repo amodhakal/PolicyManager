@@ -8,25 +8,29 @@ import { ListState } from '../../core/list-state';
 import { ApiError } from '../../core/problem-details';
 import { PolicyManagerApi } from '../../core/policy-manager-api.service';
 import { injectResource } from '../../core/resource';
-import { Badge } from '../../shared/badge';
 import { ErrorBanner } from '../../shared/error-banner';
 import { Pager } from '../../shared/pager';
 
 /**
  * Every policyholder, one page at a time, with the writes the token's role allows.
  *
- * The email column is rendered exactly as the API sent it. A masked address is a deliberate answer
- * from the server rather than a display choice, so reformatting or trimming it here would misreport
- * what the caller is entitled to see.
+ * The email column is rendered exactly as the API sent it. A masked address is a decision the
+ * server made about who may see it, so trimming, reformatting or trying to detect the mask here
+ * would misreport what the caller is entitled to.
+ *
+ * Delete is confirmed in the row rather than in `window.confirm`: a browser dialog is a blocking
+ * global that cannot be styled, cannot be asserted against, and a row-level confirmation keeps the
+ * name of the holder next to the question "delete this?".
  */
 @Component({
   selector: 'app-policy-holder-list',
   changeDetection: ChangeDetectionStrategy.OnPush,
-  imports: [FormsModule, RouterLink, Badge, ErrorBanner, Pager],
+  imports: [FormsModule, RouterLink, ErrorBanner, Pager],
   template: `
     <h1>Policyholders</h1>
     <p class="muted subtitle">
-      Soft-deleted holders are hidden from this list. Their policies stay in the book.
+      A deleted holder is hidden from this list but keeps their policies, and can be restored from
+      their own page.
     </p>
 
     <app-error-banner [error]="resource.error()" />
@@ -35,9 +39,9 @@ import { Pager } from '../../shared/pager';
       <button
         type="button"
         class="primary"
-        (click)="creating.set(!creating())"
-        [disabled]="!canWrite()"
-        [title]="canWrite() ? null : 'Your token does not carry a role that may create a holder'"
+        (click)="toggleCreate()"
+        [disabled]="!canWrite() || resource.loading()"
+        [title]="canWrite() ? null : noWriteReason"
       >
         {{ creating() ? 'Cancel' : 'New policyholder' }}
       </button>
@@ -46,13 +50,10 @@ import { Pager } from '../../shared/pager';
       }
     </div>
 
-    @if (createError(); as failure) {
-      <app-error-banner [error]="failure" />
-    }
-
     @if (creating()) {
       <form class="card" (ngSubmit)="create()">
         <h2>New policyholder</h2>
+        <app-error-banner [error]="writeError()" />
         <div class="fields">
           <label>
             First name
@@ -67,7 +68,9 @@ import { Pager } from '../../shared/pager';
             <input name="email" type="email" [(ngModel)]="draft.email" required maxlength="254" />
           </label>
         </div>
-        <button type="submit" class="primary" [disabled]="!draftIsValid() || saving()">Create</button>
+        <button type="submit" class="primary" [disabled]="!draftIsValid() || saving()">
+          Create
+        </button>
       </form>
     }
 
@@ -77,36 +80,42 @@ import { Pager } from '../../shared/pager';
 
     @if (resource.data(); as page) {
       <table>
+        <caption class="visually-hidden">
+          Policyholders on page
+          {{
+            page.page
+          }}
+        </caption>
         <thead>
           <tr>
-            <th>
+            <th scope="col" [attr.aria-sort]="sortState('lastName')">
               <button type="button" class="link" (click)="state.sortByField('lastName')">
-                Name @if (state.sortBy() === 'lastName') {
-                  <span aria-hidden="true">{{ state.descending() ? '↓' : '↑' }}</span>
-                }
+                Name
+                <span aria-hidden="true">{{ arrow('lastName') }}</span>
               </button>
             </th>
-            <th>
+            <th scope="col" [attr.aria-sort]="sortState('email')">
               <button type="button" class="link" (click)="state.sortByField('email')">
-                Email @if (state.sortBy() === 'email') {
-                  <span aria-hidden="true">{{ state.descending() ? '↓' : '↑' }}</span>
-                }
+                Email
+                <span aria-hidden="true">{{ arrow('email') }}</span>
               </button>
             </th>
-            <th>Last updated</th>
-            <th class="actions-heading">Actions</th>
+            <th scope="col">Last updated</th>
+            <th scope="col" class="actions-heading">Actions</th>
           </tr>
         </thead>
         <tbody>
           @for (holder of page.items; track holder.id) {
             <tr>
               <td>
-                <a [routerLink]="['/policyholders', holder.id]">{{ holder.lastName }}, {{ holder.firstName }}</a>
+                <a [routerLink]="['/policyholders', holder.id]"
+                  >{{ holder.lastName }}, {{ holder.firstName }}</a
+                >
               </td>
               <td>{{ holder.email }}</td>
               <td>
                 @if (holder.updatedAt) {
-                  {{ asDate(holder.updatedAt) }}
+                  <span class="numeric-text">{{ asDate(holder.updatedAt) }}</span>
                   @if (holder.updatedBy) {
                     <span class="muted">by {{ holder.updatedBy }}</span>
                   }
@@ -117,14 +126,29 @@ import { Pager } from '../../shared/pager';
               <td class="actions">
                 <a class="action-link" [routerLink]="['/policyholders', holder.id]">View</a>
                 @if (canWrite()) {
-                  <button
-                    type="button"
-                    class="link danger"
-                    (click)="remove(holder.id, holder.lastName)"
-                    [disabled]="busyId() === holder.id"
-                  >
-                    Delete
-                  </button>
+                  @if (confirmingId() === holder.id) {
+                    <span class="confirm">
+                      <span class="muted">Delete?</span>
+                      <button
+                        type="button"
+                        class="link danger"
+                        (click)="confirmDelete(holder.id)"
+                        [disabled]="busyId() === holder.id"
+                      >
+                        Confirm
+                      </button>
+                      <button type="button" class="link" (click)="cancelDelete()">Cancel</button>
+                    </span>
+                  } @else {
+                    <button
+                      type="button"
+                      class="link danger"
+                      (click)="askDelete(holder.id)"
+                      [disabled]="busyId() !== null"
+                    >
+                      Delete
+                    </button>
+                  }
                 }
               </td>
             </tr>
@@ -165,20 +189,23 @@ import { Pager } from '../../shared/pager';
       flex-direction: column;
       gap: 0.25rem;
     }
-    .actions-heading {
+    .actions-heading,
+    .actions {
       text-align: right;
     }
     .actions {
-      text-align: right;
       white-space: nowrap;
     }
     .action-link {
       margin-right: 0.5rem;
     }
-    button.link {
-      border: none;
-      background: none;
-      cursor: pointer;
+    .confirm {
+      display: inline-flex;
+      align-items: center;
+      gap: 0.25rem;
+    }
+    .numeric-text {
+      font-variant-numeric: tabular-nums;
     }
     .empty {
       text-align: center;
@@ -193,15 +220,21 @@ export class PolicyHolderList {
   private readonly destroyRef = inject(DestroyRef);
 
   protected readonly state = new ListState();
-  protected readonly resource = injectResource(() => this.api.listPolicyHolders(this.state.toQuery()));
+  protected readonly resource = injectResource(() =>
+    this.api.listPolicyHolders(this.state.toQuery()),
+  );
 
   protected readonly creating = signal(false);
   protected readonly saving = signal(false);
-  protected readonly createError = signal<ApiError | null>(null);
+  protected readonly writeError = signal<ApiError | null>(null);
+  protected readonly confirmingId = signal<number | null>(null);
   protected readonly busyId = signal<number | null>(null);
   protected draft = { firstName: '', lastName: '', email: '' };
 
-  /** Creating or deleting a holder is `Admin` or `Adjuster`; reading is any role. */
+  protected readonly noWriteReason =
+    'Creating or deleting a policyholder needs the Admin or Adjuster role.';
+
+  /** Creating or deleting a holder is `Admin` or `Adjuster`; reading is any recognised role. */
   protected canWrite(): boolean {
     return this.auth.hasRole('Admin', 'Adjuster');
   }
@@ -214,12 +247,17 @@ export class PolicyHolderList {
     );
   }
 
+  protected toggleCreate(): void {
+    this.creating.update((open) => !open);
+    this.writeError.set(null);
+  }
+
   protected create(): void {
     if (!this.draftIsValid() || this.saving()) {
       return;
     }
     this.saving.set(true);
-    this.createError.set(null);
+    this.writeError.set(null);
 
     this.api
       .createPolicyHolder({
@@ -229,6 +267,8 @@ export class PolicyHolderList {
       })
       .pipe(takeUntilDestroyed(this.destroyRef))
       .subscribe({
+        // Straight to the new holder: creating a record and then paging back to a list that now
+        // contains it makes the user hunt for the row they just made.
         next: (created) => {
           this.saving.set(false);
           this.creating.set(false);
@@ -237,12 +277,20 @@ export class PolicyHolderList {
         },
         error: (failure: ApiError) => {
           this.saving.set(false);
-          this.createError.set(failure);
+          this.writeError.set(failure);
         },
       });
   }
 
-  protected remove(id: number, lastName: string): void {
+  protected askDelete(id: number): void {
+    this.confirmingId.set(id);
+  }
+
+  protected cancelDelete(): void {
+    this.confirmingId.set(null);
+  }
+
+  protected confirmDelete(id: number): void {
     if (this.busyId() !== null) {
       return;
     }
@@ -253,10 +301,12 @@ export class PolicyHolderList {
       .subscribe({
         next: () => {
           this.busyId.set(null);
+          this.confirmingId.set(null);
           this.resource.reload();
         },
         error: (failure: ApiError) => {
           this.busyId.set(null);
+          this.confirmingId.set(null);
           this.resource.error.set(failure);
         },
       });
@@ -270,6 +320,21 @@ export class PolicyHolderList {
   protected setPageSize(size: number): void {
     this.state.setPageSize(size);
     this.resource.reload();
+  }
+
+  protected sortState(field: string): 'ascending' | 'descending' | null {
+    if (this.state.sortBy() !== field) {
+      return null;
+    }
+    return this.state.descending() ? 'descending' : 'ascending';
+  }
+
+  /** The arrow is decoration; the direction is already carried by `aria-sort` on the header. */
+  protected arrow(field: string): string {
+    if (this.state.sortBy() !== field) {
+      return '';
+    }
+    return this.state.descending() ? '▼' : '▲';
   }
 
   protected asDate(value: string): string {

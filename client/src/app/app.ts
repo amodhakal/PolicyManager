@@ -109,9 +109,7 @@ export class App {
     { path: '/reports', label: 'Reports' },
   ] as const;
 
-  protected readonly visibleLinks = computed(() =>
-    this.auth.isAuthenticated() ? this.links : [],
-  );
+  protected readonly visibleLinks = computed(() => (this.auth.isAuthenticated() ? this.links : []));
 
   protected signOut(): void {
     this.auth.signOut();

@@ -161,7 +161,7 @@ export class PolicyManagerApi {
  * cleanly to a string and then fails the model's own validation — so an omitted option has to be
  * omitted from the query, not sent empty.
  */
-function toParams(query: PageQuery): HttpParams {
+export function toParams(query: PageQuery): HttpParams {
   let params = new HttpParams();
   for (const [key, value] of Object.entries(query)) {
     if (value !== undefined && value !== null && value !== '') {

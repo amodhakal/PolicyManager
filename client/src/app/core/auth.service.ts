@@ -10,6 +10,13 @@ export type Role = 'Admin' | 'Adjuster' | 'Agent';
 
 const KNOWN_ROLES: readonly Role[] = ['Admin', 'Adjuster', 'Agent'];
 
+/**
+ * The wire form of `ClaimTypes.Role`, which is the long URI rather than the word "role" — .NET's
+ * default claim mapping does not shorten it, so a token minted by the standard tooling carries this
+ * key and nothing named `role`.
+ */
+const ROLE_CLAIM = 'http://schemas.microsoft.com/ws/2008/06/identity/claims/role';
+
 /** The claims read out of the bearer token, used only to render the UI the token can reach. */
 export interface TokenClaims {
   roles: Role[];
@@ -120,21 +127,22 @@ function decodeClaims(token: string | null): TokenClaims | null {
     // The API reads roles through ClaimTypes.Role, which is the long URI form on the wire, and a
     // token minted by another library may use the short "role" form. Both spellings are accepted;
     // an unknown one is dropped rather than guessed at.
-    const rawRoles = [payload.role, payload.roles, payload[
-      'http://schemas.microsoft.com/ws/2008/06/identity/claims/role'
-    ]]
+    // Bracketed throughout because tsconfig sets noPropertyAccessFromIndexSignature: a JWT payload
+    // is attacker-influenced data whose shape is not known at compile time, and dot access on an
+    // index signature is exactly the access this flag exists to prevent.
+    const rawRoles = [payload['role'], payload['roles'], payload[ROLE_CLAIM]]
       .flatMap((value) => (Array.isArray(value) ? value : value === undefined ? [] : [value]))
       .map((value) => String(value))
       .filter((value): value is Role => KNOWN_ROLES.includes(value as Role));
 
-    const exp = typeof payload.exp === 'number' ? new Date(payload.exp * 1000) : null;
+    const exp = typeof payload['exp'] === 'number' ? new Date(payload['exp'] * 1000) : null;
     const name =
-      typeof payload.name === 'string'
-        ? payload.name
-        : typeof payload.unique_name === 'string'
-          ? payload.unique_name
-          : typeof payload.sub === 'string'
-            ? payload.sub
+      typeof payload['name'] === 'string'
+        ? payload['name']
+        : typeof payload['unique_name'] === 'string'
+          ? payload['unique_name']
+          : typeof payload['sub'] === 'string'
+            ? payload['sub']
             : null;
 
     return { roles: [...new Set(rawRoles)], name, expiresAt: exp };

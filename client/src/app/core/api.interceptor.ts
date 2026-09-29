@@ -18,9 +18,7 @@ export const apiInterceptor: HttpInterceptorFn = (request, next) => {
   const token = auth.token();
 
   const authorized =
-    token !== null
-      ? request.clone({ setHeaders: { Authorization: `Bearer ${token}` } })
-      : request;
+    token !== null ? request.clone({ setHeaders: { Authorization: `Bearer ${token}` } }) : request;
 
   return next(authorized).pipe(
     catchError((error: unknown) => {
