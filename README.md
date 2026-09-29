@@ -31,6 +31,8 @@ Every endpoint is authenticated and role-authorized, personal data is encrypted 
 | GitHub Actions          | CI pipeline (build, test on every push to main) |
 | Docker / Docker Compose | Containerized local environment |
 | xUnit                   | Unit testing (service and controller layers) |
+| Angular                 | Web client for the API (`client/`) |
+| Vitest                  | Unit testing (client) |
 
 
 ---
@@ -64,6 +66,40 @@ dotnet ef migrations add <MigrationName> --project PolicyManager/PolicyManager.c
 Swagger UI is available at `https://localhost:7100/swagger` (the `https` profile in
 `PolicyManager/Properties/launchSettings.json`). The app calls `UseHttpsRedirection()`,
 so plain HTTP requests are redirected to HTTPS.
+
+### The Angular client
+
+`client/` is a standalone Angular application covering every endpoint: policyholders, policies,
+claims and the three reports, with the writes each role is allowed to perform.
+
+```bash
+cd client
+npm install
+npm start          # http://localhost:4200
+```
+
+**It asks for a bearer token on first run.** The API has no login endpoint — it validates
+externally minted JWTs and exposes nothing that issues one — so the client accepts a pasted
+token and keeps it in `localStorage`. The token is decoded to read the caller's roles so the UI
+can hide what would answer 403; nothing is enforced client-side, and the API remains the only
+thing that decides. A token carrying none of `Admin`, `Adjuster` or `Agent` is rejected up
+front, because such a token would authenticate and then be refused by every policy.
+
+**The dev server proxies to the API** rather than the API enabling CORS. A CORS policy would
+let any origin call a service holding encrypted personal data, for the benefit of a local
+setup; a same-origin proxy costs the API nothing. The target defaults to
+`https://localhost:7080` and is overridden with `POLICYMANAGER_API` for a container or a
+remote API:
+
+```bash
+POLICYMANAGER_API=http://localhost:8080 npm start
+```
+
+```bash
+cd client
+npm test           # Vitest
+npm run build      # production bundle into client/dist/
+```
 
 ### The app will not start without three secrets
 
@@ -179,9 +215,10 @@ in `.env.example` is deliberately invalid and will crash-loop the database conta
   run that fails entirely looks like a success. Treat them as a sketch of the intended
   load profile, not as working tooling. Tracked in issues #18, #67.
 
-- **There is no frontend.** Every endpoint needs a token, and there is nothing in this
-  repository that mints one or exercises the API by hand. Driving the API means writing a
-  token first. Tracked in issue #89.
+- **There is no token issuer.** Every endpoint needs a bearer token and nothing in this
+  repository mints one for a human — `TestTokens` exists but is test-only. Driving the API
+  means writing a token first, whether by hand or through the client, which accepts a pasted
+  one. Tracked in issue #89.
 
 - **Encrypted email columns only support equality.** The `Email` column is ciphertext, so the
   only comparison available against it is the `EmailHash` blind index — an exact match. A
@@ -558,6 +595,11 @@ PolicyManager/
 │   ├── Data/
 │   ├── Integration/
 │   └── Infrastructure/
+├── client/                 # Angular client
+│   ├── src/app/core/       # API client, auth, list state, problem-details handling
+│   ├── src/app/features/   # one folder per resource: list, detail, reports
+│   ├── src/app/shared/     # banner, pager, badge
+│   └── proxy.conf.json     # dev proxy to the API, so the API needs no CORS policy
 ├── scripts/
 │   ├── addPolicyHolders.ts
 │   ├── addPolicy.ts

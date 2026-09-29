@@ -93,6 +93,37 @@ jobs:
         timeout-minutes: 20
         run: dotnet test --no-build --configuration Release --filter "Category=SqlServer"
 
+  # The client is a separate toolchain with no dependency on the .NET one, so it is a separate job
+  # on purpose: a Node or Angular failure should report as its own failure rather than as a red
+  # .NET build, and neither suite should mask the other. The production build is included because
+  # a type error or a template error fails the build even when every test passes.
+  client:
+    runs-on: ubuntu-latest
+
+    defaults:
+      run:
+        working-directory: client
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: client/package-lock.json
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Test
+        run: npm test
+
+      - name: Build
+        run: npm run build
+
   # A model change that ships without a matching migration is invisible to the test suite: the
   # in-memory provider builds its schema from the model, and the SQL Server tests would fail on a
   # missing table rather than on the drift itself. EF surfaces the drift as PendingModelChangesWarning
