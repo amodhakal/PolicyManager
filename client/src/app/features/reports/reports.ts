@@ -74,7 +74,7 @@ import { Pager } from '../../shared/pager';
           </div>
         </div>
 
-        <table>
+        <table data-testid="open-claims-report">
           <caption class="visually-hidden">
             Open claims grouped by claim status, with counts and amounts per status
           </caption>

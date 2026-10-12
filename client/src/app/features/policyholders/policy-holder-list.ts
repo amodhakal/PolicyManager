@@ -79,7 +79,7 @@ import { Pager } from '../../shared/pager';
     }
 
     @if (resource.data(); as page) {
-      <table>
+      <table data-testid="policyholder-table">
         <caption class="visually-hidden">
           Policyholders on page
           {{
@@ -108,7 +108,7 @@ import { Pager } from '../../shared/pager';
           @for (holder of page.items; track holder.id) {
             <tr>
               <td>
-                <a [routerLink]="['/policyholders', holder.id]"
+                <a [routerLink]="['/policyholders', holder.id]" data-testid="policyholder-link"
                   >{{ holder.lastName }}, {{ holder.firstName }}</a
                 >
               </td>

@@ -19,20 +19,20 @@ import { AuthService } from './core/auth.service';
       <a class="brand" routerLink="/">Policy Manager</a>
 
       @if (auth.isAuthenticated()) {
-        <nav aria-label="Main">
+        <nav aria-label="Main" data-testid="main-nav">
           @for (item of visibleLinks(); track item.path) {
             <a [routerLink]="item.path" routerLinkActive="active">{{ item.label }}</a>
           }
         </nav>
 
-        <div class="identity">
+        <div class="identity" data-testid="identity">
           <span class="who">
             {{ auth.claims()?.name ?? 'Signed in' }}
             @if (roles().length > 0) {
               <span class="roles">({{ roles().join(', ') }})</span>
             }
           </span>
-          <button type="button" (click)="signOut()">Sign out</button>
+          <button type="button" data-testid="sign-out-button" (click)="signOut()">Sign out</button>
         </div>
       }
     </header>

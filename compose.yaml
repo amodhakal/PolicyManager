@@ -16,6 +16,7 @@
       - DB_NAME=${DB_NAME:-PolicyManager}
       - DB_USER=${DB_USER:-SA}
       - DB_PASSWORD=${DB_PASSWORD}
+      - Jwt__SigningKey=${JWT_SIGNING_KEY:-e2e-test-signing-key-that-is-long-enough-for-hmac-sha256!!}
       # The outbox broker is opt-in. Set BROKER_ENABLED=true in .env to have the API publish
       # outbox messages to RabbitMQ; left unset it keeps the in-process stand-in and never
       # needs the broker to be up.
@@ -27,6 +28,17 @@
       - Broker__QueueName=${BROKER_QUEUE_NAME:-policy-manager.outbox}
     ports:
       - "8080:8080"
+    networks:
+      - mssql-net
+  client:
+    build:
+      context: ./client
+      dockerfile: Dockerfile
+    ports:
+      - "4200:80"
+    depends_on:
+      api:
+        condition: service_started
     networks:
       - mssql-net
   rabbitmq:

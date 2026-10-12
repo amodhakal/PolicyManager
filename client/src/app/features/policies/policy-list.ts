@@ -53,7 +53,7 @@ import { Pager } from '../../shared/pager';
     <div class="toolbar">
       <label class="filter">
         Status
-        <select [value]="state.status() ?? ''" (change)="setStatus($any($event.target).value)">
+        <select data-testid="status-filter" [value]="state.status() ?? ''" (change)="setStatus($any($event.target).value)">
           <option value="">All</option>
           @for (option of statuses; track option) {
             <option [value]="option">{{ option }}</option>
@@ -66,6 +66,7 @@ import { Pager } from '../../shared/pager';
       <button
         type="button"
         class="primary"
+        data-testid="new-policy-button"
         (click)="toggleCreate()"
         [title]="
           canWrite()
@@ -223,11 +224,11 @@ import { Pager } from '../../shared/pager';
     }
 
     @if (resource.data(); as page) {
-      <table>
+      <table data-testid="policy-table">
         <thead>
           <tr>
             <th scope="col">
-              <button type="button" class="link" (click)="sortBy('policyNumber')">
+              <button type="button" class="link" data-testid="sort-policy-number" (click)="sortBy('policyNumber')">
                 Policy number
                 @if (state.sortBy() === 'policyNumber') {
                   <span aria-hidden="true">{{ state.descending() ? '▼' : '▲' }}</span>
@@ -260,7 +261,7 @@ import { Pager } from '../../shared/pager';
           @for (policy of page.items; track policy.id) {
             <tr>
               <td>
-                <a [routerLink]="['/policies', policy.id]">{{ policy.policyNumber }}</a>
+                <a [routerLink]="['/policies', policy.id]" data-testid="policy-link">{{ policy.policyNumber }}</a>
               </td>
               <td><app-badge [value]="policy.type" /></td>
               <td><app-badge [value]="policy.status" /></td>

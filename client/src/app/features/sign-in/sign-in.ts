@@ -30,6 +30,7 @@ import { AuthService } from '../../core/auth.service';
           <textarea
             id="token"
             name="token"
+            data-testid="token-input"
             rows="5"
             [ngModel]="token()"
             (ngModelChange)="token.set($event)"
@@ -39,10 +40,10 @@ import { AuthService } from '../../core/auth.service';
           ></textarea>
 
           @if (rejection(); as reason) {
-            <p class="rejection" role="alert">{{ reason }}</p>
+            <p class="rejection" role="alert" data-testid="rejection-message">{{ reason }}</p>
           }
 
-          <button type="submit" class="primary" [disabled]="token().trim().length === 0">
+          <button type="submit" class="primary" data-testid="sign-in-submit" [disabled]="token().trim().length === 0">
             Continue
           </button>
         </form>

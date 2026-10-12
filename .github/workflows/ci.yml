@@ -180,3 +180,74 @@ jobs:
           push: false
           load: false
           tags: policymanager:ci
+
+  # e2e:
+  #   runs-on: ubuntu-latest
+  #   timeout-minutes: 25
+
+  #   steps:
+  #     - name: Checkout
+  #       uses: actions/checkout@v4
+
+  #     - name: Setup Node
+  #       uses: actions/setup-node@v4
+  #       with:
+  #         node-version: 22
+  #         cache: npm
+  #         cache-dependency-path: client/package-lock.json
+
+  #     - name: Install client dependencies
+  #       working-directory: client
+  #       run: npm ci
+
+  #     - name: Generate JWT signing key
+  #       id: jwt-key
+  #       run: echo "key=$(openssl rand -base64 48)" >> "$GITHUB_OUTPUT"
+
+  #     - name: Start full stack
+  #       env:
+  #         JWT_SIGNING_KEY: ${{ steps.jwt-key.outputs.key }}
+  #         DB_PASSWORD: ${{ secrets.DB_PASSWORD || 'YourStrong!Passw0rd' }}
+  #       run: docker compose up -d --build
+
+  #     - name: Wait for API health
+  #       run: |
+  #         echo "Waiting for API to become healthy..."
+  #         for i in $(seq 1 60); do
+  #           if curl -sf http://localhost:8080/health > /dev/null 2>&1; then
+  #             echo "API is healthy"
+  #             exit 0
+  #           fi
+  #           echo "Attempt $i: API not ready yet, waiting 5s..."
+  #           sleep 5
+  #         done
+  #         echo "API failed to become healthy in 5 minutes"
+  #         docker compose logs api
+  #         exit 1
+
+  #     - name: Wait for client
+  #       run: |
+  #         echo "Waiting for client to become ready..."
+  #         for i in $(seq 1 30); do
+  #           if curl -sf http://localhost:4200 > /dev/null 2>&1; then
+  #             echo "Client is ready"
+  #             exit 0
+  #           fi
+  #           echo "Attempt $i: Client not ready yet, waiting 3s..."
+  #           sleep 3
+  #         done
+  #         echo "Client failed to become ready in 90 seconds"
+  #         docker compose logs client
+  #         exit 1
+
+  #     - name: Run E2E tests
+  #       working-directory: client
+  #       env:
+  #         E2E_JWT_SIGNING_KEY: ${{ steps.jwt-key.outputs.key }}
+  #         E2E_API_BASE: http://localhost:8080/api
+  #         E2E_BASE_URL: http://localhost:4200
+  #       run: npm run test:e2e
+
+  #     - name: Teardown stack
+  #       if: always()
+  #       run: docker compose down -v

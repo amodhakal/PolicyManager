@@ -186,7 +186,7 @@ import { Pager } from '../../shared/pager';
     }
 
     @if (resource.data(); as page) {
-      <table>
+      <table data-testid="claim-table">
         <thead>
           <tr>
             <th scope="col">
@@ -222,7 +222,7 @@ import { Pager } from '../../shared/pager';
           @for (claim of page.items; track claim.id) {
             <tr>
               <td>
-                <a [routerLink]="['/claims', claim.id]">{{ claim.claimNumber }}</a>
+                <a [routerLink]="['/claims', claim.id]" data-testid="claim-link">{{ claim.claimNumber }}</a>
               </td>
               <td><app-badge [value]="claim.status" /></td>
               <td class="numeric">{{ claim.amount | number: '1.2-2' }}</td>
