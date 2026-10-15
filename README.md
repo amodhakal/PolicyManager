@@ -30,6 +30,7 @@ Every endpoint is authenticated and role-authorized, personal data is encrypted 
 | OpenAPI / Swagger       | API documentation and contract |
 | GitHub Actions          | CI pipeline (build, test on every push to main) |
 | Docker / Docker Compose | Containerized local environment |
+| Kubernetes (Kustomize)  | Local orchestration (`k8s/`, Docker Desktop / kind) |
 | xUnit                   | Unit testing (service and controller layers) |
 | Angular                 | Web client for the API (`client/`) |
 | Vitest                  | Unit testing (client) |
@@ -204,6 +205,56 @@ API does not wait on RabbitMQ and does not contact it. The management UI is at
 `DB_PASSWORD` must satisfy the SQL Server image's password policy: **at least 8 characters
 and at least three of** uppercase, lowercase, digits, and symbols. The `xxxxxxx` placeholder
 in `.env.example` is deliberately invalid and will crash-loop the database container.
+
+---
+
+## Running in Kubernetes (local only)
+
+`k8s/` is a Kustomize stack for a **local** cluster (Docker Desktop Kubernetes or
+kind). No cloud, no registry, no TLS. Full detail lives in `k8s/README.md`; this is
+the shape and the commands.
+
+What runs: `api` Deployment (2 replicas) + `api-migrate` Job, `mssql` StatefulSet
+(×1 + 10Gi PVC), `rabbitmq` Deployment, `client` Deployment, with `api` HPA 2–6,
+PDB, and an optional `ingress` (needs ingress-nginx; port-forward works without it).
+
+```bash
+docker build -f PolicyManager/Dockerfile -t policymanager:local .
+docker build -f client/Dockerfile -t policymanager-client:local ./client
+# kind only: kind load docker-image policymanager:local policymanager-client:local
+
+kubectl apply -k k8s/
+kubectl wait --for=condition=ready pod -l app.kubernetes.io/name=mssql -n policymanager --timeout=300s
+kubectl wait --for=condition=complete job/api-migrate -n policymanager --timeout=300s
+kubectl rollout status deploy/api -n policymanager
+```
+
+- Images use `imagePullPolicy: IfNotPresent`, so locally built tags are used as-is.
+- Secrets are committed **dev-only** (`k8s/secrets.yaml`) so the stack applies out
+  of the box. Rotate with `./scripts/generate-k8s-secrets.sh`. Anything beyond
+  local takes ExternalSecrets / SealedSecrets instead.
+- Probes are the existing endpoints: liveness/startup on `/health`, readiness on
+  `/health/ready` — a pod stays out of the Service while SQL Server boots or the
+  broker is down. The Dockerfile `HEALTHCHECK` hits the same `/health` for
+  `docker ps` / Compose visibility only.
+- Migrations run once per deploy as the `api-migrate` Job (the `/app/migrate`
+  bundle, 30×2s retry), not per pod — otherwise replicas race the migration.
+- `mssql` is a single-replica StatefulSet with no HA and no PITR. That is the
+  demo topology; production is a managed database.
+- The single-holder `IMemoryCache` is per pod, so two API replicas can disagree
+  briefly on one holder read. Accepted for local, documented rather than hidden;
+  the prod fix is Redis or sticky sessions.
+
+Use without ingress:
+
+```bash
+kubectl port-forward svc/api 8080:8080 -n policymanager &
+curl -s http://localhost:8080/health/ready
+kubectl port-forward svc/client 4200:80 -n policymanager &
+```
+
+Tear down with `kubectl delete -k k8s/` (check `kubectl get pvc -n policymanager`
+afterwards — StatefulSet PVCs outlive the delete).
 
 ---
 
@@ -722,10 +773,12 @@ PolicyManager/
 │   ├── src/app/features/   # one folder per resource: list, detail, reports
 │   ├── src/app/shared/     # banner, pager, badge
 │   └── proxy.conf.json     # dev proxy to the API, so the API needs no CORS policy
+├── k8s/                   # local Kustomize stack (see k8s/README.md)
 ├── scripts/
 │   ├── addPolicyHolders.ts
 │   ├── addPolicy.ts
-│   └── addClaim.ts
+│   ├── addClaim.ts
+│   └── generate-k8s-secrets.sh  # rotate local dev-only k8s/secrets.yaml
 ├── .github/
 │   └── workflows/
 │       └── ci.yml
