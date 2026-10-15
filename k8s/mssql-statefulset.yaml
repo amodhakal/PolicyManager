@@ -1,0 +1,82 @@
+# Single-replica SQL Server for LOCAL demo only.
+# Production story is a managed database (Azure SQL / RDS). A StatefulSet
+# with one replica has no HA and no PITR — that is why this file says so.
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: mssql
+  namespace: policymanager
+  labels:
+    app.kubernetes.io/name: mssql
+    app.kubernetes.io/part-of: policymanager
+spec:
+  serviceName: mssql
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: mssql
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: mssql
+        app.kubernetes.io/part-of: policymanager
+    spec:
+      terminationGracePeriodSeconds: 30
+      containers:
+        - name: mssql
+          image: mcr.microsoft.com/mssql/server:2022-CU12-ubuntu-22.04
+          imagePullPolicy: IfNotPresent
+          ports:
+            - name: tds
+              containerPort: 1433
+          env:
+            - name: ACCEPT_EULA
+              value: 'Y'
+            - name: MSSQL_SA_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: policymanager-secrets
+                  key: DB_PASSWORD
+            - name: MSSQL_PID
+              value: 'Developer'
+          volumeMounts:
+            - name: mssql-data
+              mountPath: /var/opt/mssql/data
+          resources:
+            requests:
+              cpu: 500m
+              memory: 1Gi
+            limits:
+              cpu: 2000m
+              memory: 3Gi
+          # Same sqlcmd gate compose.yaml uses, so the API Job can wait on readiness.
+          readinessProbe:
+            exec:
+              command:
+                - /bin/bash
+                - -c
+                - '/opt/mssql-tools/bin/sqlcmd -S localhost -U SA -P "$MSSQL_SA_PASSWORD" -C -b -Q "SELECT 1" -o /dev/null'
+            initialDelaySeconds: 15
+            periodSeconds: 10
+            timeoutSeconds: 5
+            failureThreshold: 24
+          livenessProbe:
+            exec:
+              command:
+                - /bin/bash
+                - -c
+                - '/opt/mssql-tools/bin/sqlcmd -S localhost -U SA -P "$MSSQL_SA_PASSWORD" -C -b -Q "SELECT 1" -o /dev/null'
+            initialDelaySeconds: 60
+            periodSeconds: 30
+            timeoutSeconds: 5
+            failureThreshold: 3
+  volumeClaimTemplates:
+    - metadata:
+        name: mssql-data
+        labels:
+          app.kubernetes.io/name: mssql
+      spec:
+        accessModes: ['ReadWriteOnce']
+        resources:
+          requests:
+            storage: 10Gi

@@ -1,0 +1,23 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+resources:
+  - namespace.yaml
+  - secrets.yaml
+  - configmap.yaml
+  - mssql-service.yaml
+  - mssql-statefulset.yaml
+  - rabbitmq-service.yaml
+  - rabbitmq-deployment.yaml
+  - api-service.yaml
+  - api-deployment.yaml
+  - api-migrate-job.yaml
+  - api-hpa.yaml
+  - api-pdb.yaml
+  - client-deployment.yaml
+  - client-service.yaml
+  - ingress.yaml
+
+labels:
+  - pairs:
+      app.kubernetes.io/part-of: policymanager

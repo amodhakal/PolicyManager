@@ -1,0 +1,7 @@
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: policymanager
+  labels:
+    app.kubernetes.io/name: policymanager
+    app.kubernetes.io/part-of: policymanager

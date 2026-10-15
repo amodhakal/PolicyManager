@@ -1,0 +1,42 @@
+# Optional for local. Requires an ingress controller:
+# - Docker Desktop: enable "Ingress" or install ingress-nginx.
+# - kind: `kubectl apply -f https://raw.githubusercontent.com/kubernetes/ingress-nginx/main/deploy/static/provider/kind/deploy.yaml`
+# Without a controller this object is inert — port-forward still works.
+# Add `127.0.0.1 policymanager.local` to /etc/hosts, then open http://policymanager.local/
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: policymanager
+  namespace: policymanager
+  labels:
+    app.kubernetes.io/name: policymanager
+    app.kubernetes.io/part-of: policymanager
+  annotations:
+    nginx.ingress.kubernetes.io/rewrite-target: /
+spec:
+  ingressClassName: nginx
+  rules:
+    - host: policymanager.local
+      http:
+        paths:
+          - path: /api
+            pathType: Prefix
+            backend:
+              service:
+                name: api
+                port:
+                  number: 8080
+          - path: /health
+            pathType: Prefix
+            backend:
+              service:
+                name: api
+                port:
+                  number: 8080
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: client
+                port:
+                  number: 80

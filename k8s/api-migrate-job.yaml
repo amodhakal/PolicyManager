@@ -1,0 +1,47 @@
+# Runs the EF migration bundle once per deploy, before the Deployment rolls.
+# The image already contains /app/migrate (dotnet-ef bundle). The Job
+# overrides the image ENTRYPOINT (which would start the API) so only the
+# migration runs. `kubectl wait --for=condition=complete job/api-migrate -n policymanager`
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: api-migrate
+  namespace: policymanager
+  labels:
+    app.kubernetes.io/name: api-migrate
+    app.kubernetes.io/part-of: policymanager
+spec:
+  backoffLimit: 3
+  activeDeadlineSeconds: 300
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: api-migrate
+        app.kubernetes.io/part-of: policymanager
+    spec:
+      restartPolicy: Never
+      containers:
+        - name: migrate
+          image: policymanager:local
+          imagePullPolicy: IfNotPresent
+          command: ['/bin/sh', '-c']
+          args:
+            - |
+              n=0;
+              until /app/migrate --connection "Server=${DB_HOST};Database=${DB_NAME:-PolicyManager};User Id=${DB_USER:-SA};Password=${DB_PASSWORD};TrustServerCertificate=True"; do
+                n=$((n + 1));
+                if [ "$n" -ge 30 ]; then echo "Database migrations failed after $n attempts, exiting." >&2; exit 1; fi;
+                echo "Migration attempt $n failed, retrying in 2s." >&2; sleep 2;
+              done
+          envFrom:
+            - configMapRef:
+                name: api-config
+            - secretRef:
+                name: policymanager-secrets
+          resources:
+            requests:
+              cpu: 100m
+              memory: 256Mi
+            limits:
+              cpu: 500m
+              memory: 512Mi

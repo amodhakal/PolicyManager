@@ -23,5 +23,8 @@ FROM base AS final
 WORKDIR /app
 COPY --from=publish /app/publish .
 COPY --from=publish /app/migrate ./migrate
-HEALTHCHECK --interval=30s --timeout=5s --start-period=20s --retries=3 CMD ["bash", "-c", "exec 3<>/dev/tcp/127.0.0.1/8080 && printf 'GET / HTTP/1.0\\r\\n\\r\\n' >&3 && head -n 1 <&3 | grep -q 'HTTP/1.1'"]
+# Hits /health (liveness) rather than / (404). Greps for 200 so a 404/307
+# does not report healthy. K8s probes cover the same endpoints; this is
+# only for `docker ps` / compose visibility.
+HEALTHCHECK --interval=30s --timeout=5s --start-period=20s --retries=3 CMD ["bash", "-c", "exec 3<>/dev/tcp/127.0.0.1/8080 && printf 'GET /health HTTP/1.1\\r\\nHost: localhost\\r\\nConnection: close\\r\\n\\r\\n' >&3 && head -n 1 <&3 | grep -q ' 200 '"]
 ENTRYPOINT ["/bin/sh", "-c", "if [ -z \"${DB_HOST:-}\" ]; then echo \"DB_HOST is not set, skipping database migrations.\" >&2; else n=0; until /app/migrate --connection \"Server=${DB_HOST};Database=${DB_NAME:-PolicyManager};User Id=${DB_USER:-SA};Password=${DB_PASSWORD};TrustServerCertificate=True\"; do n=$((n + 1)); if [ \"$n\" -ge 30 ]; then echo \"Database migrations failed after $n attempts, exiting.\" >&2; exit 1; fi; echo \"Migration attempt $n failed, retrying in 2s.\" >&2; sleep 2; done; fi; exec dotnet PolicyManager.dll"]
